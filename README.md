@@ -91,7 +91,7 @@ rotated by ±35° and ±60°, which recovers a head tilted onto a hand.
 
 ## 3. Locking
 
-- Locks after `absence_timeout_s` (default 8 s) with no evidence.
+- Locks after `absence_timeout_s` (default 5 s) with no evidence.
 - `--lock-on-unknown` also locks when an unrecognised face is at the desk and
   you are not — off by default, because a steep pose can score low. The
   `match_margin` band keeps a badly-posed *you* out of the stranger bucket.
@@ -102,7 +102,7 @@ rotated by ±35° and ±60°, which recovers a head tilted onto a hand.
 ## Commands
 
 ```bash
-python plock.py run [--timeout 8] [--threshold 0.4] [--no-preview] [--dry-run]
+python plock.py run [--timeout 5] [--threshold 0.4] [--no-preview] [--dry-run]
                     [--no-body] [--no-motion] [--lock-on-unknown] [--fps 12]
                     [--camera 0] [--backend auto|opencv|insightface]
 python plock.py test          # same pipeline, locking disabled
@@ -123,7 +123,7 @@ flags override the file. The knobs you are most likely to touch:
 
 | key | default | meaning |
 |---|---|---|
-| `absence_timeout_s` | `8.0` | seconds of no evidence before locking |
+| `absence_timeout_s` | `5.0` | seconds of no evidence before locking |
 | `match_threshold` | `0.0` | cosine threshold; `0` = the backend's own (SFace `0.363`) |
 | `match_margin` | `0.08` | below `threshold - margin` a face is a stranger |
 | `confirm_frames` | `2` | consecutive matches before you count as recognised |
