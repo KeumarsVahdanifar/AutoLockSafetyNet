@@ -24,7 +24,7 @@ from .backends import FaceBackend, FaceDet, build_backend, detect_with_rotations
 from .camera import Camera
 from .config import Config
 from .identity import Identity, list_identities
-from .ui import AMBER, FONT, GREEN, GREY, RED, WHITE
+from .ui import AMBER, FONT, GREEN, GREY, RED, WHITE, mirror_box
 
 log = logging.getLogger(__name__)
 
@@ -233,11 +233,17 @@ def enroll_interactive(
                     else:
                         status, color = "captured", GREEN
 
-                    x, y, w, h = det.bbox
-                    cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+                # Mirror first, then draw: flipping a finished frame would
+                # reverse the instructions along with the image.
+                view = cv2.flip(frame, 1) if cfg.mirror_preview else frame
+                if det is not None:
+                    x, y, w, h = (
+                        mirror_box(det.bbox, view.shape[1]) if cfg.mirror_preview else det.bbox
+                    )
+                    cv2.rectangle(view, (x, y), (x + w, y + h), color, 2)
 
                 view = _draw_progress(
-                    frame,
+                    view,
                     step,
                     step_index,
                     len(poses),
@@ -247,8 +253,6 @@ def enroll_interactive(
                     color,
                     total_captured,
                 )
-                if cfg.mirror_preview:
-                    view = cv2.flip(view, 1)
                 cv2.imshow(window, view)
 
                 key = cv2.waitKey(1) & 0xFF

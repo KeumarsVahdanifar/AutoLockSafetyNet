@@ -121,9 +121,8 @@ class PresenceLockApp:
                         identities=self.gallery.names,
                         fps=self._fps,
                         dry_run=cfg.dry_run or not self.arm,
+                        mirror=cfg.mirror_preview,
                     )
-                    if cfg.mirror_preview:
-                        view = cv2.flip(view, 1)
                     cv2.imshow(cfg.window_name, view)
 
                 if self._handle_keys() is False:

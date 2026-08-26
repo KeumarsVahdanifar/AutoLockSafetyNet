@@ -358,6 +358,50 @@ class OverlayTests(unittest.TestCase):
         )
         self.assertEqual(out.shape, frame.shape)
 
+    def test_mirrored_preview_reflects_boxes_but_not_text(self):
+        """The image is flipped before drawing, so labels stay readable."""
+        from presence_lock.presence import FrameResult, ScoredFace
+        from presence_lock.ui import draw_overlay
+
+        # A distinctive stripe on the left of the source image.
+        frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        frame[:, :40] = (255, 0, 0)
+
+        face = ScoredFace(det=FaceDet(bbox=(10, 100, 60, 60), score=0.9))
+        result = FrameResult(faces=[face], evidence=EV_FACE, seconds_to_lock=4.0)
+
+        out = draw_overlay(
+            frame.copy(),
+            result,
+            timeout_s=8.0,
+            backend_name="stub",
+            identities=["owner"],
+            mirror=True,
+        )
+        # The stripe moved to the right edge...
+        self.assertTrue((out[200, 300] == (255, 0, 0)).all())
+        # ...and the face box followed it: 320 - 10 - 60 = 250.
+        self.assertFalse((out[100:160, 240:260] == 0).all())
+        # Nothing is left behind at the box's original position.
+        self.assertTrue((out[100:160, 10:70] == 0).all())
+
+        # The status banner is drawn after the flip, so on a uniform background
+        # it renders pixel-identical either way — proof the text is not reversed.
+        blank = np.zeros((240, 320, 3), dtype=np.uint8)
+        kwargs = dict(
+            timeout_s=8.0, backend_name="stub", identities=["owner"], fps=12.0
+        )
+        mirrored_banner = draw_overlay(blank.copy(), FrameResult(), mirror=True, **kwargs)
+        plain_banner = draw_overlay(blank.copy(), FrameResult(), mirror=False, **kwargs)
+        self.assertTrue((mirrored_banner[:52] == plain_banner[:52]).all())
+        self.assertGreater(int(mirrored_banner[:52].sum()), 0)  # something was drawn
+
+    def test_mirror_box_is_an_involution(self):
+        from presence_lock.ui import mirror_box
+
+        self.assertEqual(mirror_box((10, 20, 60, 60), 320), (250, 20, 60, 60))
+        self.assertEqual(mirror_box(mirror_box((10, 20, 60, 60), 320), 320), (10, 20, 60, 60))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

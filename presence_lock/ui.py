@@ -51,6 +51,18 @@ def _banner(frame: np.ndarray, lines: list[tuple[str, tuple[int, int, int]]]) ->
         )
 
 
+def mirror_box(box: tuple[int, int, int, int], width: int) -> tuple[int, int, int, int]:
+    """Reflect an (x, y, w, h) box across the vertical centre line."""
+    x, y, w, h = box
+    return (width - x - w, y, w, h)
+
+
+def mirror_points(points: np.ndarray, width: int) -> np.ndarray:
+    flipped = np.asarray(points, dtype=np.float32).copy()
+    flipped[:, 0] = width - 1 - flipped[:, 0]
+    return flipped
+
+
 def draw_overlay(
     frame: np.ndarray,
     result: FrameResult,
@@ -60,9 +72,17 @@ def draw_overlay(
     identities: list[str],
     fps: float = 0.0,
     dry_run: bool = False,
+    mirror: bool = False,
 ) -> np.ndarray:
+    # Mirror the image *before* drawing, then reflect only the geometry.
+    # Flipping afterwards would reverse every label as well.
+    if mirror:
+        frame = cv2.flip(frame, 1)
+    width = frame.shape[1]
+
     for face in result.faces:
-        x, y, w, h = face.det.bbox
+        box = face.det.bbox
+        x, y, w, h = mirror_box(box, width) if mirror else box
         color = _face_color(face)
         cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
         text = _label(face)
@@ -70,11 +90,13 @@ def draw_overlay(
         cv2.rectangle(frame, (x, y - th - 8), (x + tw + 8, y), color, -1)
         cv2.putText(frame, text, (x + 4, y - 5), FONT, 0.5, (20, 20, 20), 1, cv2.LINE_AA)
         if face.det.landmarks is not None:
-            for px, py in face.det.landmarks.astype(int):
+            points = mirror_points(face.det.landmarks, width) if mirror else face.det.landmarks
+            for px, py in points.astype(int):
                 cv2.circle(frame, (int(px), int(py)), 2, color, -1)
 
     if result.body.present and result.body.bbox and result.evidence != EV_FACE:
-        x, y, w, h = result.body.bbox
+        box = result.body.bbox
+        x, y, w, h = mirror_box(box, width) if mirror else box
         cv2.rectangle(frame, (x, y), (x + w, y + h), AMBER, 1)
         cv2.putText(frame, result.body.reason, (x, y - 6), FONT, 0.45, AMBER, 1, cv2.LINE_AA)
 
