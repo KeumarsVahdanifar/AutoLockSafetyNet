@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     tuning.add_argument(
         "--timeout", dest="absence_timeout_s", type=float, default=None,
-        help="seconds unrecognised before locking (default 5)",
+        help="seconds unrecognised before locking (default 3)",
     )
     tuning.add_argument("--threshold", dest="match_threshold", type=float, default=None)
     # Holds are 0 by default: only a recognised face keeps the session open.
@@ -105,8 +105,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ---- doctor / config ----
     sub.add_parser("doctor", parents=[common], help="check the environment end to end")
-    cfg_cmd = sub.add_parser("config", help="show or write the config file")
-    cfg_cmd.add_argument("--write", action="store_true", help="write defaults to config.json")
+    cfg_cmd = sub.add_parser("config", help="show, write or edit the config file")
+    cfg_cmd.add_argument("--write", action="store_true", help="write the full config to config.json")
+    cfg_cmd.add_argument(
+        "--set", dest="settings", action="append", metavar="KEY=VALUE", default=None,
+        help="set a value and save it, e.g. --set absence_timeout_s=3 "
+             "(repeatable; creates config.json if absent)",
+    )
+    cfg_cmd.add_argument(
+        "--unset", dest="unset", action="append", metavar="KEY", default=None,
+        help="restore a key to its built-in default",
+    )
 
     return parser
 
@@ -275,15 +284,80 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def cmd_config(args: argparse.Namespace) -> int:
+    import json
+
     cfg = Config.load(args.config)
+    changed: list[str] = []
+
+    for assignment in args.settings or []:
+        if "=" not in assignment:
+            log.error("Expected KEY=VALUE, got %r", assignment)
+            return 2
+        key, _, raw = assignment.partition("=")
+        key = key.strip()
+        try:
+            before = getattr(cfg, key)
+            setattr(cfg, key, coerce_setting(cfg, key, raw.strip()))
+        except AttributeError:
+            log.error("Unknown setting %r. See `python plock.py config` for the full list.", key)
+            return 2
+        except ValueError as exc:
+            log.error("%s", exc)
+            return 2
+        changed.append(f"{key}: {before!r} -> {getattr(cfg, key)!r}")
+
+    for key in args.unset or []:
+        key = key.strip()
+        if not hasattr(cfg, key):
+            log.error("Unknown setting %r", key)
+            return 2
+        before = getattr(cfg, key)
+        setattr(cfg, key, getattr(Config(), key))
+        changed.append(f"{key}: {before!r} -> {getattr(cfg, key)!r} (default)")
+
+    if changed:
+        cfg.normalise()
+        path = cfg.save(args.config)
+        for line in changed:
+            log.info("%s", line)
+        log.info("Saved %s", path)
+        return 0
+
     if args.write:
         path = cfg.save(args.config)
         log.info("Wrote %s", path)
         return 0
-    import json
 
     print(json.dumps(cfg.to_dict(), indent=2))
     return 0
+
+
+def coerce_setting(cfg: Config, key: str, raw: str):
+    """Parse a CLI string into the type the config field already holds."""
+    current = getattr(cfg, key)  # raises AttributeError for unknown keys
+
+    if isinstance(current, bool):  # before int: bool is a subclass of int
+        if raw.lower() in ("1", "true", "yes", "on"):
+            return True
+        if raw.lower() in ("0", "false", "no", "off"):
+            return False
+        raise ValueError(f"{key} expects a boolean, got {raw!r}")
+    if isinstance(current, int):
+        try:
+            return int(raw)
+        except ValueError:
+            raise ValueError(f"{key} expects a whole number, got {raw!r}") from None
+    if isinstance(current, float):
+        try:
+            return float(raw)
+        except ValueError:
+            raise ValueError(f"{key} expects a number, got {raw!r}") from None
+    if isinstance(current, tuple):
+        try:
+            return tuple(int(part) for part in raw.split(",") if part.strip())
+        except ValueError:
+            raise ValueError(f"{key} expects comma-separated whole numbers, got {raw!r}") from None
+    return raw
 
 
 # ----------------------------------------------------------------------

@@ -101,7 +101,7 @@ full.
 
 ```bash
 python plock.py run --body-hold 60      # up to 60 s head-down, pose model on
-python plock.py run                     # strict: 5 s, recognition or nothing
+python plock.py run                     # strict: 3 s, recognition or nothing
 ```
 
 A confirmed stranger cancels every hold, and after a lock all weak evidence is
@@ -109,7 +109,7 @@ discarded — nothing but your face re-arms the monitor.
 
 ## 3. Locking
 
-- Locks `absence_timeout_s` (default 5 s) after the last recognition.
+- Locks `absence_timeout_s` (default 3 s) after the last recognition.
 - Locks after `unknown_confirm_s` (default 2 s) when an unrecognised face is at
   the desk and you are not. Seeing you resets that timer, so a colleague
   reading over your shoulder while you sit there is not an intruder.
@@ -126,7 +126,7 @@ discarded — nothing but your face re-arms the monitor.
 ## Commands
 
 ```bash
-python plock.py run [--timeout 5] [--threshold 0.4] [--no-preview] [--dry-run]
+python plock.py run [--timeout 3] [--threshold 0.4] [--no-preview] [--dry-run]
                     [--body-hold 60] [--track-hold 20] [--motion-hold 10]
                     [--no-lock-on-unknown] [--fps 12]
                     [--camera 0] [--backend auto|opencv|insightface]
@@ -135,20 +135,48 @@ python plock.py enroll --name <you>
 python plock.py identities
 python plock.py models [--force]
 python plock.py doctor
-python plock.py config [--write]     # dump / create config.json
+python plock.py config [--write] [--set KEY=VALUE] [--unset KEY]
 ```
 
 `run` is the default, so `python plock.py --timeout 3` works too.
 `python -m presence_lock ...` is equivalent to `python plock.py ...`.
 
+## The guarantee
+
+At the shipped defaults, measured against the real state machine at 12 fps:
+
+| what the camera sees | locks after |
+|---|---|
+| an unrecognised face (clear stranger) | **2.00 s** — the `unknown_confirm_s` path |
+| a face too ambiguous to score either way | **2.92 s** — the countdown runs out |
+| nobody at all | **2.92 s** |
+
+Nothing but your recognised face resets the clock, so no face in frame can
+outlast `absence_timeout_s`. The 0.08 s shortfall is the `confirm_frames`
+debounce landing between frames. `tests/test_presence.py` pins this for both
+face bands.
+
 ## Configuration
 
-`python plock.py config --write` writes every default to `config.json`; CLI
-flags override the file. The knobs you are most likely to touch:
+Every value lives in `config.json`. Change one without editing any source:
+
+```bash
+python plock.py config --set absence_timeout_s=3     # save a value
+python plock.py config --set body_hold_s=60          # also enables the pose model
+python plock.py config --unset body_hold_s           # back to the built-in default
+python plock.py config                               # print the effective config
+python plock.py config --write                       # materialise the whole file
+```
+
+Values are type-checked against the field they target, so `--set
+absence_timeout_s=abc` is refused rather than silently stored. CLI flags on
+`run` override the file for that session without saving.
+
+The knobs you are most likely to touch:
 
 | key | default | meaning |
 |---|---|---|
-| `absence_timeout_s` | `5.0` | seconds after the last recognition before locking |
+| `absence_timeout_s` | `3.0` | seconds after the last recognition before locking |
 | `match_threshold` | `0.0` | cosine threshold; `0` = the backend's own (SFace `0.363`) |
 | `match_margin` | `0.08` | below `threshold - margin` a face is a stranger |
 | `confirm_frames` | `2` | consecutive matches before you count as recognised |

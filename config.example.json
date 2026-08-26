@@ -30,7 +30,7 @@
   "body_hold_s": 0.0,
   "motion_hold_s": 0.0,
   "evidence_hold_s": 1.5,
-  "absence_timeout_s": 5.0,
+  "absence_timeout_s": 3.0,
   "lock_cooldown_s": 10.0,
   "lock_on_unknown": true,
   "unknown_confirm_s": 2.0,

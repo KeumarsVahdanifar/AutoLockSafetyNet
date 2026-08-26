@@ -393,7 +393,7 @@ class ShippedDefaultsTests(unittest.TestCase):
 
     def test_only_recognition_holds_the_session_open(self):
         cfg = Config()
-        self.assertEqual(cfg.absence_timeout_s, 5.0)
+        self.assertEqual(cfg.absence_timeout_s, 3.0)
         self.assertEqual(cfg.track_hold_s, 0.0)
         self.assertEqual(cfg.body_hold_s, 0.0)
         self.assertEqual(cfg.motion_hold_s, 0.0)
@@ -409,12 +409,94 @@ class ShippedDefaultsTests(unittest.TestCase):
         self.assertTrue(cfg.use_body_fallback)
         self.assertTrue(cfg.use_motion_fallback)
 
+    def test_an_unrecognised_face_locks_within_the_timeout(self):
+        """The guarantee: a face that is not yours cannot outlast the timeout.
+
+        Simulated at the real defaults and the real frame rate, for both bands
+        an unrecognised face can fall into: a clear stranger, and a face too
+        ambiguous to score either way.
+        """
+        clock = FakeClock()
+        patcher = mock.patch.object(presence_mod.time, "monotonic", clock)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        for label, embedding in (("clear stranger", STRANGER), ("ambiguous", BLURRY_OWNER)):
+            with self.subTest(face=label):
+                cfg = Config()  # shipped defaults, nothing overridden
+                backend = StubBackend()
+                gallery = make_gallery(threshold=0.5, margin=cfg.match_margin)
+                engine = PresenceEngine(cfg, backend, gallery, None)
+                step = 1.0 / cfg.target_fps
+
+                # Establish the owner so the clock starts from a recognition.
+                backend.set(((10, 10, 80, 80), OWNER))
+                for _ in range(max(1, cfg.confirm_frames)):
+                    engine.process(FRAME)
+                    clock.advance(step)
+
+                started = clock.now
+                backend.set(((10, 10, 80, 80), embedding))  # they take your seat
+                locked_after = None
+                for _ in range(500):
+                    if engine.process(FRAME).should_lock:
+                        locked_after = clock.now - started
+                        break
+                    clock.advance(step)
+
+                self.assertIsNotNone(locked_after, f"{label} never triggered a lock")
+                self.assertLessEqual(locked_after, cfg.absence_timeout_s)
+
     def test_a_detector_without_a_hold_is_left_alone(self):
         cfg = Config()
         cfg.use_body_fallback = True  # preview-only, as `test` uses it
         cfg.normalise()
         self.assertTrue(cfg.use_body_fallback)
         self.assertEqual(cfg.body_hold_s, 0.0)
+
+
+class ConfigSettingTests(unittest.TestCase):
+    """`plock config --set KEY=VALUE` type handling."""
+
+    def setUp(self) -> None:
+        from presence_lock.cli import coerce_setting
+
+        self.coerce = coerce_setting
+        self.cfg = Config()
+
+    def test_numbers(self):
+        self.assertEqual(self.coerce(self.cfg, "absence_timeout_s", "3"), 3.0)
+        self.assertIsInstance(self.coerce(self.cfg, "absence_timeout_s", "3"), float)
+        self.assertEqual(self.coerce(self.cfg, "camera_index", "2"), 2)
+
+    def test_booleans_are_not_parsed_as_integers(self):
+        self.assertIs(self.coerce(self.cfg, "lock_on_unknown", "false"), False)
+        self.assertIs(self.coerce(self.cfg, "lock_on_unknown", "on"), True)
+        self.assertIs(self.coerce(self.cfg, "preview", "0"), False)
+
+    def test_tuples_and_strings(self):
+        self.assertEqual(self.coerce(self.cfg, "rotation_angles", "-30,30,60"), (-30, 30, 60))
+        self.assertEqual(self.coerce(self.cfg, "identity", "kian"), "kian")
+
+    def test_bad_input_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.coerce(self.cfg, "absence_timeout_s", "abc")
+        with self.assertRaises(ValueError):
+            self.coerce(self.cfg, "lock_on_unknown", "maybe")
+        with self.assertRaises(AttributeError):
+            self.coerce(self.cfg, "no_such_key", "1")
+
+    def test_roundtrip_through_a_saved_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            cfg = Config()
+            cfg.absence_timeout_s = 3.0
+            cfg.rotation_angles = (-30, 30)
+            cfg.save(path)
+
+            loaded = Config.load(path)
+            self.assertEqual(loaded.absence_timeout_s, 3.0)
+            self.assertEqual(loaded.rotation_angles, (-30, 30))
 
 
 class IdentityTests(unittest.TestCase):
