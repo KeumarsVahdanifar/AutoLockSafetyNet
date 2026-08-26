@@ -74,6 +74,7 @@ class FrameResult:
     strangers: list[ScoredFace] = field(default_factory=list)
     body: BodySignal = field(default_factory=BodySignal)
     motion: bool = False
+    stranger_for: float = 0.0  # seconds an unrecognised face has been in frame
     evidence: str = EV_NONE
     absent_for: float = 0.0
     seconds_to_lock: float = math.inf
@@ -214,10 +215,10 @@ class PresenceEngine:
 
         owner = next((f for f in scored if f.match and f.match.is_match), None)
         result.owner = owner
+        # Sitting where you sat does not make someone you: a face scored below
+        # the stranger cut-off is listed here wherever it appears in frame.
         result.strangers = [
-            f
-            for f in scored
-            if f.match and f.match.is_stranger and not f.tracked and f is not owner
+            f for f in scored if f.match and f.match.is_stranger and f is not owner
         ]
 
         # --- strongest layer: a confirmed recognition -------------------
@@ -231,6 +232,16 @@ class PresenceEngine:
             self._track_updated = now
         else:
             self._match_streak = 0
+
+        # --- a stranger invalidates every weak layer --------------------
+        # Somebody else's face at the desk must not be propped up by the body
+        # or motion they themselves produce, so the graces expire immediately.
+        # This holds even with `lock_on_unknown` off, where it simply means the
+        # normal absence countdown runs instead of being extended.
+        result.stranger_for = self._update_stranger_timer(result.strangers, owner, now)
+        if result.stranger_for >= cfg.unknown_confirm_s:
+            self._last_strong = 0.0
+            self._track_box = None
 
         # --- weaker layers ---------------------------------------------
         if result.evidence == EV_NONE:
@@ -312,13 +323,32 @@ class PresenceEngine:
 
         for index, det in enumerate(detections[:3]):
             face = ScoredFace(det=det)
-            face.tracked = track_fresh and iou(det.bbox, self._track_box) >= 0.3  # type: ignore[arg-type]
             if index == 0 or recognise:
                 embedding = self.backend.embed(det)
                 if embedding is not None:
                     face.match = self.gallery.match(embedding)
+            # The tracked layer exists for faces that are *probably* yours but
+            # score too low to confirm. A face below the stranger cut-off is
+            # not ambiguous, so it never inherits your box.
+            in_box = track_fresh and iou(det.bbox, self._track_box) >= 0.3  # type: ignore[arg-type]
+            face.tracked = in_box and not (face.match is not None and face.match.is_stranger)
             scored.append(face)
         return scored
+
+    def _update_stranger_timer(
+        self, strangers: list[ScoredFace], owner: ScoredFace | None, now: float
+    ) -> float:
+        """Seconds an unrecognised face has been in frame with you absent.
+
+        Seeing you resets it, so a colleague reading over your shoulder while
+        you sit there never registers as an intruder.
+        """
+        if not strangers or owner is not None:
+            self._stranger_since = None
+            return 0.0
+        if self._stranger_since is None:
+            self._stranger_since = now
+        return now - self._stranger_since
 
     def _lock_reason(self, result: FrameResult, owner: ScoredFace | None, now: float) -> str:
         cfg = self.cfg
@@ -326,14 +356,11 @@ class PresenceEngine:
         if result.absent_for >= cfg.absence_timeout_s:
             return f"absent for {result.absent_for:.0f}s (last evidence: {result.evidence_label})"
 
-        if cfg.lock_on_unknown and result.strangers:
-            if self._stranger_since is None:
-                self._stranger_since = now
-            sustained = now - self._stranger_since
-            owner_gone = owner is None and (now - self._last_strong) >= cfg.unknown_confirm_s
-            if sustained >= cfg.unknown_confirm_s and owner_gone:
-                return f"unrecognised face present for {sustained:.0f}s"
-        else:
-            self._stranger_since = None
+        if cfg.lock_on_unknown and result.stranger_for >= cfg.unknown_confirm_s:
+            best = max((f.similarity for f in result.strangers), default=float("nan"))
+            return (
+                f"unrecognised face for {result.stranger_for:.0f}s "
+                f"(best score {best:.2f} < {self.gallery.threshold:.2f})"
+            )
 
         return ""

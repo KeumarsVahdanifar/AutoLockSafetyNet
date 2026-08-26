@@ -54,8 +54,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-motion", dest="use_motion_fallback", action="store_false", default=None
     )
     run.add_argument(
-        "--lock-on-unknown", dest="lock_on_unknown", action="store_true", default=None,
-        help="also lock when an unrecognised face is at the desk and you are not",
+        "--no-lock-on-unknown", dest="lock_on_unknown", action="store_false", default=None,
+        help="do not lock just because an unrecognised face is at the desk",
     )
     run.add_argument(
         "--dry-run", dest="dry_run", action="store_true", default=None,

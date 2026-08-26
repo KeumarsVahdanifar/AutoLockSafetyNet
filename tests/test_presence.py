@@ -235,7 +235,7 @@ class PresenceEngineTests(unittest.TestCase):
         self.assertFalse(engine.locked)
         self.assertEqual(result.evidence, EV_FACE)
 
-    def test_stranger_locks_only_when_enabled(self):
+    def test_stranger_locks_after_the_confirmation_window(self):
         cfg = make_config(lock_on_unknown=True, unknown_confirm_s=2.0)
         engine = self.build(cfg)
         self.backend.set(((10, 10, 80, 80), OWNER))
@@ -248,6 +248,63 @@ class PresenceEngineTests(unittest.TestCase):
         result = engine.process(FRAME)
         self.assertTrue(result.should_lock)
         self.assertIn("unrecognised", result.lock_reason)
+
+    def test_stranger_in_the_owners_tracked_box_still_locks(self):
+        """Someone sitting down where you sat does not inherit your session."""
+        cfg = make_config(lock_on_unknown=True, unknown_confirm_s=2.0, track_grace_s=60.0)
+        engine = self.build(cfg)
+        box = (10, 10, 80, 80)
+        self.backend.set((box, OWNER))
+        engine.process(FRAME)
+
+        self.backend.set((box, STRANGER))  # same position, different face
+        self.clock.advance(1.0)
+        first = engine.process(FRAME)
+        self.assertFalse(first.faces[0].tracked, "a stranger must not count as tracked")
+        self.assertEqual(len(first.strangers), 1)
+        self.assertNotEqual(first.evidence, presence_mod.EV_TRACKED)
+
+        self.clock.advance(2.5)
+        result = engine.process(FRAME)
+        self.assertTrue(result.should_lock)
+
+    def test_stranger_cancels_the_body_fallback(self):
+        """A stranger's own body must not hold your session open."""
+        cfg = make_config(
+            lock_on_unknown=False,  # even with the intruder lock disabled
+            use_body_fallback=True,
+            body_grace_s=600.0,
+            unknown_confirm_s=2.0,
+        )
+        engine = self.build(cfg, StubBody(present=True))
+        self.backend.set(((10, 10, 80, 80), OWNER))
+        engine.process(FRAME)
+
+        # The stranger has to persist past unknown_confirm_s before the graces
+        # are cut, which debounces a single misread frame of the real owner.
+        self.backend.set(((150, 10, 80, 80), STRANGER))
+        self.clock.advance(1.0)
+        engine.process(FRAME)
+        self.clock.advance(2.5)
+        engine.process(FRAME)  # stranger confirmed -> weak layers expire
+
+        self.backend.set()  # they look down; only a body is visible
+        self.clock.advance(4.0)
+        result = engine.process(FRAME)
+        self.assertEqual(result.evidence, EV_NONE)
+        self.assertTrue(result.should_lock)
+
+    def test_stranger_beside_the_owner_is_not_an_intruder(self):
+        """Someone reading over your shoulder while you sit there is fine."""
+        cfg = make_config(lock_on_unknown=True, unknown_confirm_s=2.0)
+        engine = self.build(cfg)
+        for _ in range(4):
+            self.backend.set(((10, 10, 80, 80), OWNER), ((150, 10, 80, 80), STRANGER))
+            self.clock.advance(2.0)
+            result = engine.process(FRAME)
+            self.assertFalse(result.should_lock)
+        self.assertEqual(result.stranger_for, 0.0)
+        self.assertEqual(result.evidence, EV_FACE)
 
     def test_low_scoring_owner_is_not_treated_as_a_stranger(self):
         """The margin keeps an awkward pose out of the intruder path."""

@@ -73,7 +73,7 @@ class Config:
     # ------------------------------------------------------------------
     absence_timeout_s: float = 3.0
     lock_cooldown_s: float = 10.0  # ignore further lock requests for this long
-    lock_on_unknown: bool = False  # stranger at the desk with the owner gone -> lock now
+    lock_on_unknown: bool = True  # stranger at the desk with the owner gone -> lock now
     unknown_confirm_s: float = 2.0  # a stranger must persist this long to count
     dry_run: bool = False  # log the lock instead of performing it
     release_camera_when_locked: bool = True  # drop the handle so the webcam LED goes out

@@ -124,6 +124,13 @@ def draw_overlay(
             WHITE,
         ),
     ]
+    if result.stranger_for > 0:
+        lines.append(
+            (
+                f"unrecognised face for {result.stranger_for:.1f}s",
+                RED,
+            )
+        )
     _banner(frame, lines)
 
     if result.seconds_to_lock <= min(3.0, timeout_s) and result.evidence == EV_NONE:

@@ -92,9 +92,15 @@ rotated by ±35° and ±60°, which recovers a head tilted onto a hand.
 ## 3. Locking
 
 - Locks after `absence_timeout_s` (default 3 s) with no evidence.
-- `--lock-on-unknown` also locks when an unrecognised face is at the desk and
-  you are not — off by default, because a steep pose can score low. The
-  `match_margin` band keeps a badly-posed *you* out of the stranger bucket.
+- Locks after `unknown_confirm_s` (default 2 s) when an unrecognised face is at
+  the desk and you are not. Seeing you resets that timer, so a colleague
+  reading over your shoulder while you sit there is not an intruder.
+- A confirmed stranger also cancels every weak layer, so their own body and
+  movement cannot hold your session open — that applies even with
+  `--no-lock-on-unknown`, where it just means the normal countdown runs.
+- The `match_margin` band separates "too low to confirm" from "definitely
+  someone else", so a badly-posed *you* is tracked rather than treated as an
+  intruder. Widen it if your own steep poses trip the lock.
 - While the session is locked the loop idles at 1 Hz and releases the camera, so
   the webcam LED goes out.
 - `--dry-run` logs the decision instead of locking. Use it while tuning.
@@ -103,7 +109,7 @@ rotated by ±35° and ±60°, which recovers a head tilted onto a hand.
 
 ```bash
 python plock.py run [--timeout 3] [--threshold 0.4] [--no-preview] [--dry-run]
-                    [--no-body] [--no-motion] [--lock-on-unknown] [--fps 12]
+                    [--no-body] [--no-motion] [--no-lock-on-unknown] [--fps 12]
                     [--camera 0] [--backend auto|opencv|insightface]
 python plock.py test          # same pipeline, locking disabled
 python plock.py enroll --name <you>
@@ -130,7 +136,8 @@ flags override the file. The knobs you are most likely to touch:
 | `track_grace_s` / `body_grace_s` / `motion_grace_s` | `30` / `120` / `20` | how long each weak layer may extend presence |
 | `target_fps` | `12.0` | processing rate — the main CPU dial |
 | `recognize_every` | `2` | run the embedding model every Nth frame |
-| `lock_on_unknown` | `false` | lock when a stranger is at the desk and you are not |
+| `lock_on_unknown` | `true` | lock when a stranger is at the desk and you are not |
+| `unknown_confirm_s` | `2.0` | how long a stranger must persist to count |
 | `rotation_retry` | `true` | retry detection on rotated frames |
 | `preview` / `mirror_preview` | `true` | preview window, selfie view |
 | `dry_run` | `false` | log instead of locking |
@@ -142,6 +149,7 @@ flags override the file. The knobs you are most likely to touch:
 | locks while you are working | raise `absence_timeout_s`, or `enroll --append` in that pose |
 | does not recognise you | lower `match_threshold` (try `0.32`), add samples, improve lighting |
 | recognises other people | raise `match_threshold` (try `0.40`), re-enrol with better light |
+| locks on you as an "unrecognised face" | raise `match_margin` (try `0.15`), `enroll --append` in that pose, or `--no-lock-on-unknown` |
 | CPU too high | lower `target_fps`, raise `recognize_every`, `--no-body` |
 | stays open with the chair empty | lower `body_grace_s`, or `--no-motion` |
 

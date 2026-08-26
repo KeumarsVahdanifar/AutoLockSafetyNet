@@ -31,7 +31,7 @@
   "motion_grace_s": 20.0,
   "absence_timeout_s": 3.0,
   "lock_cooldown_s": 10.0,
-  "lock_on_unknown": false,
+  "lock_on_unknown": true,
   "unknown_confirm_s": 2.0,
   "dry_run": false,
   "release_camera_when_locked": true,
