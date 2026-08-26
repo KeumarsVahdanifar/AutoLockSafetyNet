@@ -20,8 +20,6 @@ DARK = (28, 28, 28)
 
 
 def _face_color(face: ScoredFace) -> tuple[int, int, int]:
-    if face.spoofed:
-        return RED
     if face.match and face.match.is_match:
         return GREEN
     if face.tracked:
@@ -32,14 +30,11 @@ def _face_color(face: ScoredFace) -> tuple[int, int, int]:
 
 
 def _label(face: ScoredFace) -> str:
-    if face.spoofed:
-        return f"SPOOF {face.liveness.score:.2f}"
     if face.match is None:
         return "face"
-    live = f" L{face.liveness.score:.2f}" if face.liveness.checked else ""
     if face.match.is_match:
-        return f"{face.match.name} {face.match.similarity:.2f}{live}"
-    return f"{face.label} {face.match.similarity:.2f}{live}"
+        return f"{face.match.name} {face.match.similarity:.2f}"
+    return f"{face.label} {face.match.similarity:.2f}"
 
 
 def _banner(frame: np.ndarray, lines: list[tuple[str, tuple[int, int, int]]]) -> None:
@@ -141,8 +136,6 @@ def draw_overlay(
                 RED,
             )
         )
-    if result.spoof_rejected:
-        lines.append(("liveness check rejected the face — not counted as present", RED))
     if result.withheld_reason:
         lines.append((f"lock withheld: {result.withheld_reason}", AMBER))
     elif safety and ("DISARMED" in safety or "PAUSED" in safety or "BREAKER" in safety):

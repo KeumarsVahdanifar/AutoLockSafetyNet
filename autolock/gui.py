@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import sys
 import threading
 import time
 import tkinter as tk
@@ -21,7 +22,15 @@ import cv2
 import numpy as np
 
 from . import __version__, autostart, models
-from .config import DEFAULT_CONFIG_PATH, PROJECT_ROOT, Config, ensure_dirs
+from .config import (
+    DEFAULT_CONFIG_PATH,
+    FIELD_SPECS,
+    PROJECT_ROOT,
+    Config,
+    coerce_value,
+    ensure_dirs,
+    grouped_fields,
+)
 from .identity import list_identities
 from .lock import get_locker
 from .presence import EV_FACE, EV_NONE, FrameResult
@@ -31,17 +40,31 @@ log = logging.getLogger(__name__)
 
 PREVIEW_W, PREVIEW_H = 560, 420
 
-# A calm dark palette; the accent colours match the overlay's box colours so
-# the preview and the chrome agree with each other.
-BG = "#15171c"
-PANEL = "#1e2128"
-PANEL_2 = "#252932"
-FG = "#e6e8ee"
-MUTED = "#8b93a7"
-GREEN = "#64dc78"
-AMBER = "#fabe3c"
-RED = "#f04646"
+# A calm dark palette. The status accents match the overlay's box colours, so
+# the preview and the chrome around it say the same thing in the same colour.
+BG = "#101216"  # window ground
+PANEL = "#181b21"  # cards
+PANEL_2 = "#212630"  # inputs, wells
+LINE = "#2b313c"  # hairline separators
+FG = "#e8eaf0"
+MUTED = "#7f8899"
+GREEN = "#5ed17a"
+AMBER = "#f5b73d"
+RED = "#ef5350"
 BLUE = "#5aa9f0"
+
+# One type scale, used everywhere, so nothing is "nearly" the same size as
+# something else. Segoe UI on Windows, with sane fallbacks elsewhere.
+_FAMILY = {"win32": "Segoe UI", "darwin": "SF Pro Text"}.get(sys.platform, "DejaVu Sans")
+FONT_TITLE = (_FAMILY, 16, "bold")
+FONT_HERO = (_FAMILY, 34, "bold")
+FONT_BODY = (_FAMILY, 10)
+FONT_LABEL = (_FAMILY, 10)
+FONT_SMALL = (_FAMILY, 9)
+FONT_GROUP = (_FAMILY, 8, "bold")
+
+PAD = 16  # the one spacing unit; everything is a multiple of it
+SEARCH_PLACEHOLDER = "Search settings"
 
 
 @dataclass
@@ -208,76 +231,136 @@ class AutoLockGUI:
     def _init_style(self) -> None:
         style = ttk.Style()
         try:
-            style.theme_use("clam")
+            style.theme_use("clam")  # the only built-in theme that honours colours
         except tk.TclError:
             pass
-        style.configure(".", background=BG, foreground=FG, fieldbackground=PANEL_2)
+
+        style.configure(".", background=BG, foreground=FG, fieldbackground=PANEL_2,
+                        font=FONT_BODY, borderwidth=0, focuscolor=BLUE)
+
+        # Surfaces
         style.configure("TFrame", background=BG)
         style.configure("Panel.TFrame", background=PANEL)
-        style.configure("TLabel", background=BG, foreground=FG)
-        style.configure("Panel.TLabel", background=PANEL, foreground=FG)
-        style.configure("Muted.TLabel", background=PANEL, foreground=MUTED, font=("Segoe UI", 9))
-        style.configure("Title.TLabel", background=BG, foreground=FG, font=("Segoe UI", 15, "bold"))
-        style.configure(
-            "Big.TLabel", background=PANEL, foreground=FG, font=("Segoe UI", 26, "bold")
-        )
-        style.configure(
-            "TButton", background=PANEL_2, foreground=FG, borderwidth=0, padding=(12, 7)
-        )
-        style.map("TButton", background=[("active", "#333844"), ("disabled", "#22252c")])
-        style.configure("Accent.TButton", background=BLUE, foreground="#0d1117")
-        style.map("Accent.TButton", background=[("active", "#7dbcf5")])
-        style.configure("Danger.TButton", background=RED, foreground="#ffffff")
-        style.map("Danger.TButton", background=[("active", "#f66")])
-        style.configure("TNotebook", background=BG, borderwidth=0)
-        style.configure("TNotebook.Tab", background=PANEL, foreground=MUTED, padding=(16, 8))
-        style.map(
-            "TNotebook.Tab",
-            background=[("selected", PANEL_2)],
-            foreground=[("selected", FG)],
-        )
-        style.configure("TCheckbutton", background=PANEL, foreground=FG)
-        style.configure("Horizontal.TScale", background=PANEL)
+        style.configure("Well.TFrame", background=PANEL_2)
+        style.configure("Rule.TFrame", background=LINE)
+
+        # Type
+        style.configure("TLabel", background=BG, foreground=FG, font=FONT_BODY)
+        style.configure("Panel.TLabel", background=PANEL, foreground=FG, font=FONT_LABEL)
+        style.configure("Muted.TLabel", background=PANEL, foreground=MUTED, font=FONT_SMALL)
+        style.configure("HeaderMuted.TLabel", background=BG, foreground=MUTED, font=FONT_SMALL)
+        style.configure("Title.TLabel", background=BG, foreground=FG, font=FONT_TITLE)
+        style.configure("Hero.TLabel", background=PANEL, foreground=FG, font=FONT_HERO)
+        style.configure("Group.TLabel", background=PANEL, foreground=MUTED, font=FONT_GROUP)
+
+        # Buttons: one quiet default, one accent, one danger. Generous hit areas.
+        style.configure("TButton", background=PANEL_2, foreground=FG,
+                        borderwidth=0, padding=(14, 9), font=FONT_BODY)
+        style.map("TButton",
+                  background=[("pressed", "#2c333f"), ("active", "#2a303b"),
+                              ("disabled", "#1b1f26")],
+                  foreground=[("disabled", "#4d5563")])
+        style.configure("Accent.TButton", background=BLUE, foreground="#0b1017",
+                        font=(_FAMILY, 10, "bold"))
+        style.map("Accent.TButton",
+                  background=[("pressed", "#4d97dc"), ("active", "#74b7f4"),
+                              ("disabled", "#1b1f26")],
+                  foreground=[("disabled", "#4d5563")])
+        style.configure("Danger.TButton", background=PANEL_2, foreground=RED)
+        style.map("Danger.TButton", background=[("active", "#332224")])
+
+        # Tabs sit on the window ground, with the selected one lifted onto the
+        # card colour so it reads as the front of a stack. clam draws a raised
+        # client border and shifts the selected tab; both are removed here so
+        # the tab strip and the panel below it read as one surface.
+        try:
+            style.layout("TNotebook", [])
+        except tk.TclError:
+            pass
+        style.configure("TNotebook", background=BG, borderwidth=0, tabmargins=(0, 0, 0, 0),
+                        bordercolor=BG, lightcolor=BG, darkcolor=BG)
+        # clam draws each tab with a bevel; flattening its three border colours
+        # is the only way to get a plain tab out of it.
+        style.configure("TNotebook.Tab", background=BG, foreground=MUTED,
+                        padding=(18, 11), borderwidth=0, font=FONT_BODY,
+                        bordercolor=BG, lightcolor=BG, darkcolor=BG)
+        style.map("TNotebook.Tab",
+                  background=[("selected", PANEL)],
+                  foreground=[("selected", FG), ("active", FG)],
+                  lightcolor=[("selected", PANEL)],
+                  darkcolor=[("selected", PANEL)],
+                  bordercolor=[("selected", PANEL)],
+                  expand=[("selected", (0, 0, 0, 0))])
+
+        style.configure("TCheckbutton", background=PANEL, foreground=FG,
+                        font=FONT_LABEL, focuscolor=PANEL)
+        style.map("TCheckbutton", background=[("active", PANEL)], foreground=[("active", FG)])
+        style.configure("TCombobox", fieldbackground=PANEL_2, background=PANEL_2,
+                        foreground=FG, arrowcolor=MUTED, padding=6, borderwidth=0)
+        style.map("TCombobox", fieldbackground=[("readonly", PANEL_2)])
+        style.configure("Vertical.TScrollbar", background="#39414f", troughcolor=PANEL_2,
+                        borderwidth=0, arrowsize=13, bordercolor=PANEL_2,
+                        lightcolor="#39414f", darkcolor="#39414f")
+        style.map("Vertical.TScrollbar", background=[("active", "#4a5464")])
 
     def _placeholder(self) -> np.ndarray:
-        canvas = np.full((PREVIEW_H, PREVIEW_W, 3), 26, dtype=np.uint8)
-        cv2.putText(
-            canvas, "camera preview", (PREVIEW_W // 2 - 90, PREVIEW_H // 2),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (110, 110, 110), 1, cv2.LINE_AA,
-        )
+        """An empty state that says what to do, not just that nothing is here."""
+        canvas = np.full((PREVIEW_H, PREVIEW_W, 3), 0x26, dtype=np.uint8)
+        canvas[:] = (0x30, 0x26, 0x21)  # PANEL_2 in BGR
+        centre = (PREVIEW_W // 2, PREVIEW_H // 2)
+        cv2.circle(canvas, (centre[0], centre[1] - 26), 30, (0x4a, 0x42, 0x3c), 2, cv2.LINE_AA)
+        cv2.ellipse(canvas, (centre[0], centre[1] + 34), (46, 26), 0, 180, 360,
+                    (0x4a, 0x42, 0x3c), 2, cv2.LINE_AA)
+        for text, dy, shade in (("Camera is off", 84, (0x99, 0x88, 0x7f)),
+                                ("Press Start monitoring", 108, (0x76, 0x68, 0x60))):
+            (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+            cv2.putText(canvas, text, (centre[0] - tw // 2, centre[1] + dy),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, shade, 1, cv2.LINE_AA)
         return canvas
 
     def _build(self) -> None:
         header = ttk.Frame(self.root)
-        header.pack(fill="x", padx=16, pady=(14, 8))
-        ttk.Label(header, text="AutoLock Safety Net", style="Title.TLabel").pack(side="left")
-        self.lock_method = ttk.Label(
-            header, text=get_locker().describe(), style="TLabel", foreground=MUTED
+        header.pack(fill="x", padx=PAD, pady=(PAD, PAD // 2))
+        title = ttk.Frame(header)
+        title.pack(side="left")
+        ttk.Label(title, text="AutoLock Safety Net", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            title, text="locks when you are not the one in front of the camera",
+            style="HeaderMuted.TLabel",
+        ).pack(anchor="w")
+        ttk.Label(header, text=get_locker().describe(), style="HeaderMuted.TLabel").pack(
+            side="right", pady=(6, 0)
         )
-        self.lock_method.pack(side="right")
 
         body = ttk.Frame(self.root)
-        body.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+        body.pack(fill="both", expand=True, padx=PAD, pady=(PAD // 2, PAD))
 
-        # --- left: preview + status ---
+        # --- left: the thing you actually look at ---
         left = ttk.Frame(body, style="Panel.TFrame")
-        left.pack(side="left", fill="both", expand=True, padx=(0, 12))
+        left.pack(side="left", fill="both", expand=True, padx=(0, PAD))
 
-        self.preview = tk.Label(left, bg=PANEL, bd=0)
-        self.preview.pack(padx=12, pady=12)
+        self.preview = tk.Label(left, bg=PANEL_2, bd=0)
+        self.preview.pack(padx=PAD, pady=(PAD, PAD - 4))
 
+        # Status reads as one sentence: a number, then what it means.
         status = ttk.Frame(left, style="Panel.TFrame")
-        status.pack(fill="x", padx=12, pady=(0, 12))
+        status.pack(fill="x", padx=PAD)
+        self.countdown = ttk.Label(status, text="--", style="Hero.TLabel")
+        self.countdown.pack(side="left")
+        wording = ttk.Frame(status, style="Panel.TFrame")
+        wording.pack(side="left", padx=(PAD - 4, 0), pady=(6, 0))
+        self.state_label = ttk.Label(wording, text="stopped", style="Panel.TLabel")
+        self.state_label.pack(anchor="w")
+        self.safety_label = ttk.Label(wording, text="not running", style="Muted.TLabel")
+        self.safety_label.pack(anchor="w")
 
-        self.countdown = ttk.Label(status, text="--", style="Big.TLabel")
-        self.countdown.grid(row=0, column=0, sticky="w")
-        self.state_label = ttk.Label(status, text="stopped", style="Panel.TLabel")
-        self.state_label.grid(row=0, column=1, sticky="w", padx=(14, 0))
-        self.safety_label = ttk.Label(status, text="", style="Muted.TLabel")
-        self.safety_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        ttk.Frame(left, style="Rule.TFrame", height=1).pack(
+            fill="x", padx=PAD, pady=(PAD - 4, 0)
+        )
 
+        # Primary action on the left, destructive-ish one far from it.
         controls = ttk.Frame(left, style="Panel.TFrame")
-        controls.pack(fill="x", padx=12, pady=(0, 14))
+        controls.pack(fill="x", padx=PAD, pady=PAD)
         self.start_btn = ttk.Button(
             controls, text="Start monitoring", style="Accent.TButton", command=self.on_start
         )
@@ -285,143 +368,334 @@ class AutoLockGUI:
         self.stop_btn = ttk.Button(
             controls, text="Stop", command=self.on_stop, state="disabled"
         )
-        self.stop_btn.pack(side="left", padx=6)
-        self.test_btn = ttk.Button(controls, text="Test (never locks)", command=self.on_test)
-        self.test_btn.pack(side="left")
-        self.pause_btn = ttk.Button(controls, text="Pause locking", command=self.on_pause)
+        self.stop_btn.pack(side="left", padx=(8, 0))
+        self.test_btn = ttk.Button(controls, text="Test", command=self.on_test)
+        self.test_btn.pack(side="left", padx=(8, 0))
+        self.pause_btn = ttk.Button(
+            controls, text="Pause locking", style="Danger.TButton", command=self.on_pause
+        )
         self.pause_btn.pack(side="right")
 
-        # --- right: tabs ---
-        right = ttk.Notebook(body, width=330)
+        # --- right: everything you configure ---
+        right = ttk.Notebook(body, width=360)
         right.pack(side="right", fill="both")
         right.add(self._tab_setup(right), text="Setup")
-        right.add(self._tab_tuning(right), text="Tuning")
+        right.add(self._tab_settings(right), text="Settings")
         right.add(self._tab_startup(right), text="Startup")
 
     # ------------------------------------------------------------------
+    def _section(self, parent, title: str, first: bool = False) -> ttk.Frame:
+        """A titled block. Sections carry the hierarchy so labels do not have to."""
+        ttk.Label(parent, text=title.upper(), style="Group.TLabel").pack(
+            anchor="w", pady=(0 if first else PAD + 4, 6)
+        )
+        holder = ttk.Frame(parent, style="Panel.TFrame")
+        holder.pack(fill="x")
+        return holder
+
+    def _entry(self, parent, textvariable) -> tk.Entry:
+        entry = tk.Entry(
+            parent, textvariable=textvariable, bg=PANEL_2, fg=FG, insertbackground=FG,
+            relief="flat", highlightthickness=1, highlightbackground=PANEL_2,
+            highlightcolor=BLUE, font=FONT_BODY,
+        )
+        entry.pack(fill="x", ipady=6)
+        return entry
+
+    def _add_placeholder(self, entry: tk.Entry, var: tk.StringVar, text: str) -> None:
+        """Grey prompt text that clears on focus and returns when left empty."""
+        state = {"showing": False}
+
+        def show() -> None:
+            if not var.get():
+                state["showing"] = True
+                entry.configure(fg=MUTED)
+                var.set(text)
+
+        def hide(_event=None) -> None:
+            if state["showing"]:
+                state["showing"] = False
+                var.set("")
+            entry.configure(fg=FG)
+
+        def restore(_event=None) -> None:
+            if not var.get():
+                show()
+
+        entry.bind("<FocusIn>", hide)
+        entry.bind("<FocusOut>", restore)
+        show()
+
+    def _hint(self, parent, text: str, pad: tuple[int, int] = (6, 0)) -> ttk.Label:
+        label = ttk.Label(
+            parent, text=text, style="Muted.TLabel", wraplength=310, justify="left"
+        )
+        label.pack(anchor="w", pady=pad)
+        return label
+
     def _tab_setup(self, parent) -> ttk.Frame:
-        tab = ttk.Frame(parent, style="Panel.TFrame", padding=14)
+        tab = ttk.Frame(parent, style="Panel.TFrame", padding=PAD)
 
-        ttk.Label(tab, text="Enrolled identities", style="Panel.TLabel").pack(anchor="w")
-        self.identities_label = ttk.Label(tab, text="none", style="Muted.TLabel", wraplength=290)
-        self.identities_label.pack(anchor="w", pady=(2, 10))
+        who = self._section(tab, "Who this watches for", first=True)
+        self.identities_label = ttk.Label(
+            who, text="none", style="Panel.TLabel", wraplength=310
+        )
+        self.identities_label.pack(anchor="w", pady=(0, PAD - 4))
 
-        ttk.Label(tab, text="Your name", style="Panel.TLabel").pack(anchor="w")
+        ttk.Label(who, text="Name", style="Panel.TLabel").pack(anchor="w", pady=(0, 4))
         self.name_var = tk.StringVar(value=(list_identities() or [""])[0])
-        tk.Entry(
-            tab, textvariable=self.name_var, bg=PANEL_2, fg=FG, insertbackground=FG,
-            relief="flat", highlightthickness=0,
-        ).pack(fill="x", pady=(2, 8), ipady=5)
+        self._entry(who, self.name_var)
 
-        ttk.Button(tab, text="Enrol my face", style="Accent.TButton", command=self.on_enroll).pack(
-            fill="x"
+        buttons = ttk.Frame(who, style="Panel.TFrame")
+        buttons.pack(fill="x", pady=(10, 0))
+        ttk.Button(
+            buttons, text="Enrol my face", style="Accent.TButton", command=self.on_enroll
+        ).pack(side="left")
+        ttk.Button(buttons, text="Add more poses", command=self.on_enroll_append).pack(
+            side="left", padx=(8, 0)
         )
-        ttk.Button(tab, text="Add more poses", command=self.on_enroll_append).pack(
-            fill="x", pady=(6, 0)
+        self._hint(
+            who,
+            "Enrolment walks you through seven head poses. Add more after a haircut, "
+            "new glasses, or a change in your desk lighting.",
         )
-        ttk.Label(
-            tab,
-            text=(
-                "Enrolment opens a guided window and walks you through seven head "
-                "poses. Add more poses after a haircut, new glasses, or a change in "
-                "your desk lighting."
-            ),
-            style="Muted.TLabel",
-            wraplength=290,
-            justify="left",
-        ).pack(anchor="w", pady=(10, 12))
 
-        ttk.Button(tab, text="Download models", command=self.on_models).pack(fill="x")
-        ttk.Button(tab, text="Run diagnostics", command=self.on_doctor).pack(fill="x", pady=(6, 0))
+        maintenance = self._section(tab, "Maintenance")
+        row = ttk.Frame(maintenance, style="Panel.TFrame")
+        row.pack(fill="x")
+        ttk.Button(row, text="Download models", command=self.on_models).pack(side="left")
+        ttk.Button(row, text="Run diagnostics", command=self.on_doctor).pack(
+            side="left", padx=(8, 0)
+        )
+        self._hint(maintenance, "Diagnostics are written to logs/autolock.log.")
 
         self.refresh_identities()
         return tab
 
-    def _tab_tuning(self, parent) -> ttk.Frame:
-        tab = ttk.Frame(parent, style="Panel.TFrame", padding=14)
+    # ------------------------------------------------------------------
+    # Settings, generated from the field registry in config.py
+    # ------------------------------------------------------------------
+    def _tab_settings(self, parent) -> ttk.Frame:
+        tab = ttk.Frame(parent, style="Panel.TFrame")
 
-        self.timeout_var = tk.DoubleVar(value=self.cfg.absence_timeout_s)
-        self._slider(
-            tab, "Lock after (seconds unrecognised)", self.timeout_var, 1, 30,
-            "The countdown starts the moment you are not recognised.",
-        )
+        top = ttk.Frame(tab, style="Panel.TFrame", padding=(PAD, PAD, PAD, 10))
+        top.pack(fill="x")
+        self.search_var = tk.StringVar()
+        search = self._entry(top, self.search_var)
+        self._add_placeholder(search, self.search_var, SEARCH_PLACEHOLDER)
+        self.search_var.trace_add("write", lambda *_: self._filter_settings())
 
-        self.body_var = tk.DoubleVar(value=self.cfg.body_hold_s)
-        self._slider(
-            tab, "Head-down allowance (seconds)", self.body_var, 0, 180,
-            "0 = strict. Above 0, your body being visible buys this much time "
-            "before locking — a ceiling, not a reset.",
-        )
-
-        self.threshold_var = tk.DoubleVar(value=self.cfg.match_threshold or 0.0)
-        self._slider(
-            tab, "Match threshold (0 = backend default)", self.threshold_var, 0.0, 0.7,
-            "Higher is stricter about who counts as you.", resolution=0.01,
-        )
-
-        self.unknown_var = tk.BooleanVar(value=self.cfg.lock_on_unknown)
-        ttk.Checkbutton(
-            tab, text="Lock when a stranger is at the desk", variable=self.unknown_var
-        ).pack(anchor="w", pady=(8, 0))
-
-        self.dry_var = tk.BooleanVar(value=self.cfg.dry_run)
-        ttk.Checkbutton(
-            tab, text="Dry run (log instead of locking)", variable=self.dry_var
-        ).pack(anchor="w")
-
-        ttk.Button(tab, text="Save settings", style="Accent.TButton", command=self.on_save).pack(
-            fill="x", pady=(14, 0)
-        )
+        row = ttk.Frame(top, style="Panel.TFrame")
+        row.pack(fill="x", pady=(10, 0))
         ttk.Label(
-            tab, text=f"Saved to {self.config_path.name}", style="Muted.TLabel"
-        ).pack(anchor="w", pady=(4, 0))
+            row, text="18 of 42 shown", style="Muted.TLabel", name="settingscount"
+        ).pack(side="left")
+        self.count_label = row.nametowidget("settingscount")
+        self.advanced_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            row, text="Show advanced", variable=self.advanced_var,
+            command=self._filter_settings,
+        ).pack(side="right")
+
+        ttk.Frame(tab, style="Rule.TFrame", height=1).pack(fill="x")
+
+        # Scrollable body: Tkinter has no scrollable frame, so it is a Canvas
+        # with a frame inside it and the scrollregion kept in sync.
+        body = ttk.Frame(tab, style="Panel.TFrame")
+        body.pack(fill="both", expand=True)
+        canvas = tk.Canvas(body, bg=PANEL, highlightthickness=0, bd=0)
+        scrollbar = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
+        self.settings_inner = ttk.Frame(canvas, style="Panel.TFrame")
+        window = canvas.create_window((0, 0), window=self.settings_inner, anchor="nw")
+
+        self.settings_inner.bind(
+            "<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
+        canvas.configure(yscrollcommand=scrollbar.set)
+        # The scrollbar is packed first: an expanding canvas packed before it
+        # claims the whole width and leaves the scrollbar zero pixels wide.
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        def on_wheel(event):
+            canvas.yview_scroll(int(-event.delta / 120), "units")
+
+        canvas.bind_all("<MouseWheel>", on_wheel)  # Windows / macOS
+        canvas.bind_all("<Button-4>", lambda _e: canvas.yview_scroll(-1, "units"))  # Linux
+        canvas.bind_all("<Button-5>", lambda _e: canvas.yview_scroll(1, "units"))
+
+        self._build_setting_rows(self.settings_inner)
+        # Rows are packed as they are built; apply the filter once now so the
+        # advanced ones start hidden rather than appearing until first toggled.
+        self._filter_settings()
+
+        ttk.Frame(tab, style="Rule.TFrame", height=1).pack(fill="x")
+        footer = ttk.Frame(tab, style="Panel.TFrame", padding=PAD)
+        footer.pack(fill="x")
+        ttk.Button(
+            footer, text="Save", style="Accent.TButton", command=self.on_save
+        ).pack(side="left")
+        ttk.Button(footer, text="Reset to defaults", command=self.on_reset).pack(
+            side="left", padx=(8, 0)
+        )
+        self.save_hint = ttk.Label(
+            footer, text=self.config_path.name, style="Muted.TLabel"
+        )
+        self.save_hint.pack(side="right", pady=(10, 0))
         return tab
 
-    def _slider(self, parent, label, var, lo, hi, hint, resolution=1.0) -> None:
-        ttk.Label(parent, text=label, style="Panel.TLabel").pack(anchor="w", pady=(8, 0))
-        row = ttk.Frame(parent, style="Panel.TFrame")
-        row.pack(fill="x")
-        value = ttk.Label(row, text=f"{var.get():g}", style="Panel.TLabel", width=5)
-        value.pack(side="right")
-        scale = tk.Scale(
-            row, from_=lo, to=hi, orient="horizontal", variable=var, resolution=resolution,
-            showvalue=False, bg=PANEL, fg=FG, troughcolor=PANEL_2, highlightthickness=0,
-            bd=0, sliderrelief="flat", activebackground=BLUE,
-            command=lambda _v: value.configure(text=f"{var.get():g}"),
-        )
-        scale.pack(side="left", fill="x", expand=True)
-        ttk.Label(parent, text=hint, style="Muted.TLabel", wraplength=290, justify="left").pack(
-            anchor="w"
-        )
+    def _build_setting_rows(self, parent) -> None:
+        """One row per Config field, laid out by group."""
+        self.vars: dict[str, tk.Variable] = {}
+        self.rows: dict[str, ttk.Frame] = {}
+        self.group_headers: dict[str, ttk.Label] = {}
+        self.empty_label = ttk.Label(parent, text="no settings match", style="Muted.TLabel")
+
+        for group, keys in grouped_fields().items():
+            header = ttk.Label(parent, text=group.upper(), style="Group.TLabel")
+            header.pack(anchor="w", padx=PAD, pady=(PAD + 2, 2))
+            self.group_headers[group] = header
+
+            for key in keys:
+                spec = FIELD_SPECS[key]
+                current = getattr(self.cfg, key)
+                row = ttk.Frame(parent, style="Panel.TFrame")
+                row.pack(fill="x", padx=PAD, pady=(10, 0))
+                self.rows[key] = row
+                self._build_one_row(row, key, spec, current)
+
+    def _build_one_row(self, row, key: str, spec, current) -> None:
+        """One setting: label, control, then the sentence explaining it."""
+        if isinstance(current, bool):
+            # The checkbox carries its own label, so no separate caption.
+            var = tk.BooleanVar(value=current)
+            ttk.Checkbutton(row, text=spec.label, variable=var).pack(anchor="w")
+        elif spec.choices:
+            var = tk.StringVar(value=str(current))
+            ttk.Label(row, text=spec.label, style="Panel.TLabel").pack(anchor="w", pady=(0, 4))
+            ttk.Combobox(
+                row, textvariable=var, values=list(spec.choices), state="readonly",
+                font=FONT_BODY,
+            ).pack(fill="x")
+        elif isinstance(current, (int, float)) and spec.minimum is not None:
+            var = tk.DoubleVar(value=float(current))
+            head = ttk.Frame(row, style="Panel.TFrame")
+            head.pack(fill="x")
+            ttk.Label(head, text=spec.label, style="Panel.TLabel").pack(side="left")
+            # The value sits beside its own label rather than under the slider,
+            # so the eye reads "name: value" in one move.
+            readout = ttk.Label(head, text=f"{current:g}", style="Panel.TLabel",
+                                foreground=BLUE)
+            readout.pack(side="right")
+            tk.Scale(
+                row, from_=spec.minimum, to=spec.maximum, orient="horizontal", variable=var,
+                resolution=spec.step or 1, showvalue=False, bg=PANEL, fg=FG,
+                troughcolor=PANEL_2, highlightthickness=0, bd=0, sliderrelief="flat",
+                activebackground=BLUE, sliderlength=18, width=10,
+                command=lambda _v, r=readout, v=var: r.configure(text=f"{v.get():g}"),
+            ).pack(fill="x", pady=(2, 0))
+        else:
+            text = (
+                ",".join(str(part) for part in current)
+                if isinstance(current, tuple)
+                else str(current)
+            )
+            var = tk.StringVar(value=text)
+            ttk.Label(row, text=spec.label, style="Panel.TLabel").pack(anchor="w", pady=(0, 4))
+            self._entry(row, var)
+
+        self.vars[key] = var
+        self._hint(row, spec.help, pad=(4, 0))
+
+    def _matches_filter(self, key: str, needle: str, show_advanced: bool) -> bool:
+        spec = FIELD_SPECS[key]
+        if needle:
+            # A search reaches advanced settings too, otherwise looking one up
+            # by name silently finds nothing.
+            return (
+                needle in key.lower()
+                or needle in spec.label.lower()
+                or needle in spec.help.lower()
+            )
+        return show_advanced or not spec.advanced
+
+    def _filter_settings(self) -> None:
+        """Re-pack the visible rows, in registry order.
+
+        Everything is unpacked and packed again rather than toggled in place:
+        Tk appends re-packed widgets to the end, so hiding and showing rows
+        would otherwise slowly shuffle the page out of order.
+        """
+        needle = self.search_var.get().strip().lower()
+        if needle == SEARCH_PLACEHOLDER.lower():
+            needle = ""  # the prompt text is not a search term
+        show_advanced = bool(self.advanced_var.get())
+
+        for header in self.group_headers.values():
+            header.pack_forget()
+        for row in self.rows.values():
+            row.pack_forget()
+
+        shown = 0
+        for group, keys in grouped_fields().items():
+            visible = [k for k in keys if self._matches_filter(k, needle, show_advanced)]
+            if not visible:
+                continue
+            self.group_headers[group].pack(anchor="w", padx=PAD, pady=(PAD + 2, 2))
+            for key in visible:
+                self.rows[key].pack(fill="x", padx=PAD, pady=(10, 0))
+            shown += len(visible)
+
+        if shown:
+            self.empty_label.pack_forget()
+        else:
+            self.empty_label.pack(pady=PAD * 2)
+        self.count_label.configure(text=f"{shown} of {len(FIELD_SPECS)} shown")
 
     def _tab_startup(self, parent) -> ttk.Frame:
-        tab = ttk.Frame(parent, style="Panel.TFrame", padding=14)
-        ttk.Label(tab, text="Start at login", style="Panel.TLabel").pack(anchor="w")
-        self.autostart_label = ttk.Label(tab, text="", style="Muted.TLabel", wraplength=290)
-        self.autostart_label.pack(anchor="w", pady=(2, 10))
+        tab = ttk.Frame(parent, style="Panel.TFrame", padding=PAD)
 
+        block = self._section(tab, "Start at login", first=True)
+        self.autostart_label = ttk.Label(
+            block, text="", style="Panel.TLabel", wraplength=310
+        )
+        self.autostart_label.pack(anchor="w", pady=(0, 10))
+
+        buttons = ttk.Frame(block, style="Panel.TFrame")
+        buttons.pack(fill="x")
         ttk.Button(
-            tab, text="Enable at login", style="Accent.TButton", command=self.on_autostart_install
-        ).pack(fill="x")
-        ttk.Button(tab, text="Disable at login", command=self.on_autostart_remove).pack(
-            fill="x", pady=(6, 0)
+            buttons, text="Enable", style="Accent.TButton", command=self.on_autostart_install
+        ).pack(side="left")
+        ttk.Button(buttons, text="Disable", command=self.on_autostart_remove).pack(
+            side="left", padx=(8, 0)
+        )
+        self._hint(
+            block,
+            "At login this window opens again, already monitoring. Nothing runs hidden: "
+            "a locker you cannot see is a locker you cannot stop.",
         )
 
-        ttk.Label(
-            tab,
-            text=(
-                "At login this window opens again, already monitoring — nothing runs "
-                "hidden.\n\n"
-                "Safe by design: the monitor stays disarmed until it has recognised "
-                "you once, never locks while the camera is blind, and stops itself if "
-                "locks start firing repeatedly.\n\n"
-                "Emergency stop: press Pause locking, or create a file named PAUSE in "
-                "the project folder. Locking stops until it is deleted."
-            ),
-            style="Muted.TLabel",
-            wraplength=290,
-            justify="left",
-        ).pack(anchor="w", pady=(12, 0))
+        guards = self._section(tab, "Why this cannot lock you out")
+        for line in (
+            "Stays disarmed until it has recognised you once.",
+            "Never locks while the camera is missing or busy.",
+            "Stops itself if locks start firing repeatedly.",
+            "Grace period after every login, ended early by seeing you.",
+        ):
+            ttk.Label(
+                guards, text=f"·  {line}", style="Muted.TLabel", wraplength=310,
+                justify="left",
+            ).pack(anchor="w", pady=(0, 3))
+
+        escape = self._section(tab, "Emergency stop")
+        self._hint(
+            escape,
+            "Press Pause locking, or create a file named PAUSE in the project folder — "
+            "from a file manager, another machine, anywhere. Locking stops until it is "
+            "deleted.",
+            pad=(0, 0),
+        )
 
         self.refresh_autostart()
         return tab
@@ -429,21 +703,75 @@ class AutoLockGUI:
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
-    def collect_config(self) -> Config:
+    def collect_config(self) -> tuple[Config, list[str]]:
+        """Read every widget back into a Config, reporting anything unparseable."""
         cfg = Config.from_dict(self.cfg.to_dict())
-        cfg.absence_timeout_s = float(self.timeout_var.get())
-        cfg.body_hold_s = float(self.body_var.get())
-        cfg.match_threshold = float(self.threshold_var.get())
-        cfg.lock_on_unknown = bool(self.unknown_var.get())
-        cfg.dry_run = bool(self.dry_var.get())
-        cfg.identity = self.name_var.get().strip()
-        return cfg.normalise()
+        errors: list[str] = []
+
+        for key, var in self.vars.items():
+            raw = var.get()
+            try:
+                if isinstance(raw, bool):
+                    setattr(cfg, key, raw)
+                elif isinstance(raw, float) and isinstance(getattr(cfg, key), int):
+                    setattr(cfg, key, int(round(raw)))  # sliders are DoubleVar
+                elif isinstance(raw, (int, float)):
+                    setattr(cfg, key, type(getattr(cfg, key))(raw))
+                else:
+                    setattr(cfg, key, coerce_value(cfg, key, str(raw)))
+            except (ValueError, TypeError) as exc:
+                errors.append(f"{FIELD_SPECS[key].label}: {exc}")
+
+        return cfg.normalise(), errors
 
     def on_save(self) -> None:
-        cfg = self.collect_config()
+        cfg, errors = self.collect_config()
+        if errors:
+            messagebox.showerror("Invalid settings", "\n".join(errors))
+            return
+
         cfg.save(self.config_path)
         self.cfg = cfg
+
+        if self.monitor and self.monitor.is_alive():
+            # Settings are read when the pipeline is built, so a running
+            # monitor has to be restarted for them to take effect.
+            if messagebox.askyesno(
+                "Restart monitor?",
+                "Saved. The monitor is running with the old settings — restart it now?",
+            ):
+                arm = self.monitor.arm
+                self.on_stop()
+                self.monitor.join(timeout=5.0)
+                self._start(arm=arm)
+            return
         messagebox.showinfo("Saved", f"Settings written to {self.config_path}")
+
+    def on_reset(self) -> None:
+        if not messagebox.askyesno(
+            "Reset settings", "Put every setting back to its built-in default?"
+        ):
+            return
+        defaults = Config()
+        for key, var in self.vars.items():
+            value = getattr(defaults, key)
+            if isinstance(var, tk.BooleanVar):
+                var.set(bool(value))
+            elif isinstance(var, tk.DoubleVar):
+                var.set(float(value))
+            elif isinstance(value, tuple):
+                var.set(",".join(str(part) for part in value))
+            else:
+                var.set(str(value))
+        self._refresh_readouts()
+
+    def _refresh_readouts(self) -> None:
+        """Redraw the settings rows so slider readouts match their variables."""
+        for child in list(self.settings_inner.winfo_children()):
+            child.destroy()
+        self.cfg = self.collect_config()[0]
+        self._build_setting_rows(self.settings_inner)
+        self._filter_settings()
 
     def _start(self, arm: bool) -> None:
         if self.monitor and self.monitor.is_alive():
@@ -454,7 +782,11 @@ class AutoLockGUI:
                 "Enrol your face first — the monitor has nobody to recognise.",
             )
             return
-        self.cfg = self.collect_config()
+        cfg, errors = self.collect_config()
+        if errors:
+            messagebox.showerror("Invalid settings", "\n".join(errors))
+            return
+        self.cfg = cfg
         self.monitor = MonitorThread(self.cfg, arm, self.updates)
         self.monitor.start()
         self.start_btn.configure(state="disabled")
@@ -512,7 +844,7 @@ class AutoLockGUI:
         from .enroll import enroll_interactive
 
         def task() -> None:
-            enroll_interactive(self.collect_config(), name, append=append)
+            enroll_interactive(self.collect_config()[0], name, append=append)
             self.root.after(0, self.refresh_identities)
 
         self._run_detached(task, "Enrolment")

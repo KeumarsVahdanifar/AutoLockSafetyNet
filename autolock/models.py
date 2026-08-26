@@ -48,17 +48,6 @@ REGISTRY: dict[str, ModelSpec] = {
         purpose="face recognition (SFace)",
         required=True,
     ),
-    "antispoof": ModelSpec(
-        key="antispoof",
-        filename="anti-spoof-mn3.onnx",
-        url=(
-            "https://storage.openvinotoolkit.org/repositories/open_model_zoo/public/"
-            "2022.1/anti-spoof-mn3/anti-spoof-mn3.onnx"
-        ),
-        sha1=None,
-        purpose="liveness / anti-spoofing (MobileNetV3, Intel OMZ, Apache-2.0)",
-        required=False,
-    ),
     "pose": ModelSpec(
         key="pose",
         filename="pose_landmarker_lite.task",
