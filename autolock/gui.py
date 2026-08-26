@@ -164,7 +164,13 @@ class MonitorThread(threading.Thread):
 
 
 class AutoLockGUI:
-    def __init__(self, root: tk.Tk, cfg: Config, config_path=DEFAULT_CONFIG_PATH) -> None:
+    def __init__(
+        self,
+        root: tk.Tk,
+        cfg: Config,
+        config_path=DEFAULT_CONFIG_PATH,
+        start_monitoring: bool = False,
+    ) -> None:
         self.root = root
         self.cfg = cfg
         self.config_path = config_path
@@ -181,6 +187,20 @@ class AutoLockGUI:
         self._init_style()
         self._build()
         self._tick()
+
+        if start_monitoring:
+            # Launched at login: arm straight away, but only after the window
+            # is actually on screen, so a failure is visible rather than a
+            # message box behind nothing.
+            root.after(400, self._autostart_monitoring)
+
+    def _autostart_monitoring(self) -> None:
+        if not list_identities():
+            self.state_label.configure(
+                text="enrol your face to begin", foreground=AMBER
+            )
+            return
+        self.on_start()
 
     # ------------------------------------------------------------------
     # Chrome
@@ -390,12 +410,13 @@ class AutoLockGUI:
         ttk.Label(
             tab,
             text=(
-                "Safe by design: at login the monitor stays disarmed until it has "
-                "recognised you once, waits out a startup grace period, never locks "
-                "while the camera is blind, and stops itself if locks start firing "
-                "repeatedly.\n\n"
-                "Emergency stop: create a file named PAUSE in the project folder, or "
-                "press Pause locking above. Locking stops until it is deleted."
+                "At login this window opens again, already monitoring — nothing runs "
+                "hidden.\n\n"
+                "Safe by design: the monitor stays disarmed until it has recognised "
+                "you once, never locks while the camera is blind, and stops itself if "
+                "locks start firing repeatedly.\n\n"
+                "Emergency stop: press Pause locking, or create a file named PAUSE in "
+                "the project folder. Locking stops until it is deleted."
             ),
             style="Muted.TLabel",
             wraplength=290,
@@ -595,9 +616,18 @@ class AutoLockGUI:
         self.root.destroy()
 
 
-def launch(cfg: Config | None = None, config_path=DEFAULT_CONFIG_PATH) -> int:
+def launch(
+    cfg: Config | None = None,
+    config_path=DEFAULT_CONFIG_PATH,
+    start_monitoring: bool = False,
+) -> int:
     ensure_dirs()
     root = tk.Tk()
-    AutoLockGUI(root, cfg or Config.load(config_path), config_path)
+    AutoLockGUI(root, cfg or Config.load(config_path), config_path, start_monitoring)
+    try:
+        root.lift()
+        root.focus_force()
+    except tk.TclError:
+        pass
     root.mainloop()
     return 0

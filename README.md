@@ -26,7 +26,7 @@ python main.py gui            # or: python main.py enroll --name you && python m
 | stranger at your desk | holds the session open | locks in 2 s |
 | the countdown | resets on any face | resets only on *your* face |
 | camera unplugged | often locks you out | never locks while blind |
-| starts at login | locks you out at the login screen | disarmed until it recognises you |
+| starts at login | invisible process, locks you out at the login screen | opens a visible panel, disarmed until it recognises you |
 | runaway locking | locks you out repeatedly | circuit breaker stops it |
 
 ---
@@ -185,11 +185,27 @@ python main.py autostart --status
 python main.py autostart --uninstall
 ```
 
+**At login it opens the control panel, already monitoring** — the same window
+you get from `python main.py gui`, with the live preview, the countdown, and
+the Pause button. Nothing is hidden: a locker you cannot see is a locker you
+cannot stop, and the window is the fastest route to the pause button.
+
+If you would rather have an invisible background process, `--headless`
+installs `run --no-preview` instead. It leaves no window and no tray icon; the
+only trace is `logs/autolock.log` and an entry in Task Manager / Activity
+Monitor / `systemctl --user status`.
+
+```bash
+python main.py autostart --install --headless
+```
+
 | platform | what gets written |
 |---|---|
 | Windows | `%APPDATA%\...\Startup\AutoLockSafetyNet.cmd` |
 | macOS | `~/Library/LaunchAgents/com.autolocksafetynet.plist` |
 | Linux | `~/.config/systemd/user/autolocksafetynet.service`, else an XDG `.desktop` |
+
+`autostart --status` reports which of the two an installed entry will do.
 
 ### Four independent guards
 
@@ -237,7 +253,7 @@ lock in a minute.
 ## Commands
 
 ```bash
-python main.py gui                    # desktop control panel
+python main.py gui [--start]          # desktop control panel; --start arms it immediately
 python main.py run  [--timeout 3] [--threshold 0.4] [--no-preview] [--dry-run]
                     [--body-hold 60] [--track-hold 20] [--motion-hold 10]
                     [--no-lock-on-unknown] [--fps 12] [--camera 0]
@@ -245,7 +261,7 @@ python main.py run  [--timeout 3] [--threshold 0.4] [--no-preview] [--dry-run]
 python main.py test                   # same pipeline, locking disabled
 python main.py enroll --name <you> [--append] [--samples 12] [--from-images DIR]
 python main.py identities
-python main.py autostart [--install|--uninstall|--status] [--arg --body-hold=60]
+python main.py autostart [--install|--uninstall|--status] [--headless] [--arg --body-hold=60]
 python main.py pause [--on|--off]
 python main.py models [--force]
 python main.py doctor

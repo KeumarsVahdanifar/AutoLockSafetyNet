@@ -236,18 +236,30 @@ class SupervisorTests(ClockedTest):
 
 
 class AutostartTests(unittest.TestCase):
-    def test_launch_command_is_windowless_and_previewless(self):
+    def test_login_opens_the_visible_control_panel_by_default(self):
+        """A locker you cannot see is a locker you cannot stop."""
         from autolock import autostart
 
         command = autostart.launch_command()
+        self.assertIn("gui", command)
+        self.assertIn("--start", command)
+        self.assertNotIn("--no-preview", command)
+
+    def test_headless_is_available_for_those_who_want_it(self):
+        from autolock import autostart
+
+        command = autostart.launch_command(headless=True)
         self.assertIn("run", command)
         self.assertIn("--no-preview", command)
+        self.assertNotIn("gui", command)
 
     def test_extra_arguments_are_carried_through(self):
         from autolock import autostart
 
-        command = autostart.launch_command(["--body-hold=60"])
-        self.assertIn("--body-hold=60", command)
+        self.assertIn("--body-hold=60", autostart.launch_command(["--body-hold=60"]))
+        self.assertIn(
+            "--body-hold=60", autostart.launch_command(["--body-hold=60"], headless=True)
+        )
 
     def test_entry_path_is_defined_for_this_platform(self):
         from autolock import autostart

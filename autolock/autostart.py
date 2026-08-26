@@ -4,13 +4,18 @@ Autostart is where an auto-locker is most dangerous: a monitor that starts
 before you are seated, before the camera is awake, or with a template that no
 longer matches will lock the machine you just logged into — over and over.
 
-Two things prevent that, and both are applied here by default:
+Three things prevent that, and all are applied here by default:
 
-* the installed command carries `--no-preview`, so nothing steals focus, and
-  the monitor's own arming gate means it will not lock until it has recognised
+* the entry opens the control panel with monitoring already running, so the
+  thing holding your lock key is visible and its pause button is one click
+  away — an auto-locker you cannot see is one you cannot stop;
+* the monitor's own arming gate means it will not lock until it has recognised
   you once (see `safety.py`);
 * `uninstall` is a single command, and the pause file works even when you
   cannot reach a terminal.
+
+`--headless` is available for anyone who would rather have the old invisible
+background process.
 
 `autolock autostart --install` prints exactly what it wrote and how to undo it.
 """
@@ -35,13 +40,23 @@ APP_ID = "AutoLockSafetyNet"
 APP_NAME = "AutoLock Safety Net"
 
 
-def launch_command(extra_args: list[str] | None = None) -> list[str]:
+def launch_command(
+    extra_args: list[str] | None = None, headless: bool = False
+) -> list[str]:
     """The command an autostart entry should run.
 
+    By default this opens the control panel with monitoring already running:
+    an auto-locker you cannot see is an auto-locker you cannot stop, and the
+    window is the fastest route to the pause button. `--headless` gives the
+    invisible background process instead, for anyone who prefers it.
+
     A frozen build runs itself; a source checkout runs the current interpreter
-    against this project. `pythonw.exe` on Windows keeps the console hidden.
+    against this project. `pythonw.exe` on Windows suppresses the console
+    window — the Tk window still appears.
     """
-    args = ["run", "--no-preview", *(extra_args or [])]
+    args = (
+        ["run", "--no-preview"] if headless else ["gui", "--start"]
+    ) + list(extra_args or [])
 
     if getattr(sys, "frozen", False):  # PyInstaller bundle
         return [sys.executable, *args]
@@ -84,10 +99,10 @@ def _windows_entry() -> Path:
     return _windows_startup_dir() / f"{APP_ID}.cmd"
 
 
-def _install_windows(extra_args: list[str] | None) -> InstallResult:
+def _install_windows(extra_args: list[str] | None, headless: bool) -> InstallResult:
     entry = _windows_entry()
     entry.parent.mkdir(parents=True, exist_ok=True)
-    command = launch_command(extra_args)
+    command = launch_command(extra_args, headless)
     # `start ""` detaches so the login sequence is never held up by us.
     script = (
         "@echo off\r\n"
@@ -123,12 +138,12 @@ def _macos_entry() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"com.{APP_ID.lower()}.plist"
 
 
-def _install_macos(extra_args: list[str] | None) -> InstallResult:
+def _install_macos(extra_args: list[str] | None, headless: bool) -> InstallResult:
     entry = _macos_entry()
     entry.parent.mkdir(parents=True, exist_ok=True)
     plist = {
         "Label": f"com.{APP_ID.lower()}",
-        "ProgramArguments": launch_command(extra_args),
+        "ProgramArguments": launch_command(extra_args, headless),
         "WorkingDirectory": str(PROJECT_ROOT),
         "RunAtLoad": True,
         "KeepAlive": False,  # never respawn a monitor that is failing
@@ -183,8 +198,8 @@ def _desktop_entry() -> Path:
     return base / "autostart" / f"{APP_ID.lower()}.desktop"
 
 
-def _install_linux(extra_args: list[str] | None) -> InstallResult:
-    command = launch_command(extra_args)
+def _install_linux(extra_args: list[str] | None, headless: bool) -> InstallResult:
+    command = launch_command(extra_args, headless)
 
     if shutil.which("systemctl"):
         entry = _systemd_entry()
@@ -296,13 +311,13 @@ def is_installed() -> bool:
     return bool(entry and entry.exists())
 
 
-def install(extra_args: list[str] | None = None) -> InstallResult:
+def install(extra_args: list[str] | None = None, headless: bool = False) -> InstallResult:
     if IS_WINDOWS:
-        return _install_windows(extra_args)
+        return _install_windows(extra_args, headless)
     if IS_MACOS:
-        return _install_macos(extra_args)
+        return _install_macos(extra_args, headless)
     if IS_LINUX:
-        return _install_linux(extra_args)
+        return _install_linux(extra_args, headless)
     return InstallResult(False, "", f"Autostart is not supported on {sys.platform}.", "")
 
 

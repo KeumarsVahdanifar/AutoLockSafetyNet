@@ -101,7 +101,11 @@ def build_parser() -> argparse.ArgumentParser:
     enroll.add_argument("--from-images", type=Path, default=None, help="enrol from a photo folder")
 
     # ---- gui ----
-    sub.add_parser("gui", help="open the desktop control panel")
+    gui_cmd = sub.add_parser("gui", help="open the desktop control panel")
+    gui_cmd.add_argument(
+        "--start", dest="start_monitoring", action="store_true",
+        help="begin monitoring as soon as the window opens (used by autostart)",
+    )
 
     # ---- autostart ----
     auto = sub.add_parser("autostart", help="start at login (install / remove / status)")
@@ -109,6 +113,10 @@ def build_parser() -> argparse.ArgumentParser:
     auto_group.add_argument("--install", action="store_true", help="run at login")
     auto_group.add_argument("--uninstall", action="store_true", help="stop running at login")
     auto_group.add_argument("--status", action="store_true", help="report what is installed")
+    auto.add_argument(
+        "--headless", action="store_true",
+        help="run invisibly in the background instead of opening the control panel",
+    )
     auto.add_argument(
         "--arg", dest="extra_args", action="append", default=None, metavar="FLAG",
         help="extra flag for the installed command, e.g. --arg --body-hold=60",
@@ -216,7 +224,9 @@ def cmd_gui(args: argparse.Namespace) -> int:
             exc,
         )
         return 2
-    return launch(Config.load(args.config), args.config)
+    return launch(
+        Config.load(args.config), args.config, getattr(args, "start_monitoring", False)
+    )
 
 
 def cmd_autostart(args: argparse.Namespace) -> int:
@@ -228,13 +238,22 @@ def cmd_autostart(args: argparse.Namespace) -> int:
         return 0 if result.ok else 1
 
     if args.install:
-        result = autostart.install(args.extra_args)
+        result = autostart.install(args.extra_args, args.headless)
         if not result.ok:
             log.error("%s", result.message)
             return 1
         log.info("%s", result.message)
         log.info("  entry:   %s", result.location)
-        log.info("  command: %s", " ".join(autostart.launch_command(args.extra_args)))
+        log.info(
+            "  command: %s",
+            " ".join(autostart.launch_command(args.extra_args, args.headless)),
+        )
+        log.info(
+            "  shows:   %s",
+            "nothing — it runs invisibly; watch logs/autolock.log"
+            if args.headless
+            else "the control panel, already monitoring",
+        )
         log.info("  remove:  %s", result.undo)
         log.info(
             "Safety at login: the monitor stays disarmed until it recognises you once, "
@@ -246,10 +265,26 @@ def cmd_autostart(args: argparse.Namespace) -> int:
 
     # default: status
     if autostart.is_installed():
-        log.info("Start at login: ENABLED (%s)", autostart.entry_path())
+        entry = autostart.entry_path()
+        log.info("Start at login: ENABLED (%s)", entry)
+        try:
+            installed = entry.read_text(encoding="utf-8") if entry else ""
+        except OSError:
+            installed = ""
+        if installed:
+            visible = "gui" in installed
+            log.info(
+                "  it will open: %s",
+                "the control panel, already monitoring"
+                if visible
+                else "nothing — it runs invisibly; watch logs/autolock.log",
+            )
     else:
         log.info("Start at login: not enabled")
-    log.info("Command: %s", " ".join(autostart.launch_command(args.extra_args)))
+    log.info(
+        "Would run: %s",
+        " ".join(autostart.launch_command(args.extra_args, args.headless)),
+    )
     return 0
 
 
