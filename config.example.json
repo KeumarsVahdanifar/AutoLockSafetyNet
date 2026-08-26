@@ -29,7 +29,7 @@
   "track_grace_s": 30.0,
   "body_grace_s": 120.0,
   "motion_grace_s": 20.0,
-  "absence_timeout_s": 5.0,
+  "absence_timeout_s": 3.0,
   "lock_cooldown_s": 10.0,
   "lock_on_unknown": false,
   "unknown_confirm_s": 2.0,
