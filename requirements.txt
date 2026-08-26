@@ -1,0 +1,14 @@
+# Core: detection (YuNet) + recognition (SFace) both run inside OpenCV's DNN
+# module, so no separate inference runtime is required.
+opencv-contrib-python>=4.9
+numpy>=1.24
+
+# Optional but strongly recommended: body/pose fallback that keeps you
+# "present" when your head is down or turned away and no face is visible.
+mediapipe>=0.10.9 ; python_version < "3.15"
+
+# Optional accuracy upgrade. If these import successfully the InsightFace
+# backend (SCRFD + ArcFace) is selected automatically. Needs a C++ toolchain
+# on Windows and currently has no wheels for Python 3.14+.
+# insightface>=0.7.3
+# onnxruntime>=1.17

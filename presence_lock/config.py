@@ -1,0 +1,134 @@
+"""Configuration model and on-disk paths."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, dataclass, fields
+from pathlib import Path
+from typing import Any
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+MODELS_DIR = PROJECT_ROOT / "models"
+DATA_DIR = PROJECT_ROOT / "data"
+IDENTITY_DIR = DATA_DIR / "identity"
+LOG_DIR = PROJECT_ROOT / "logs"
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.json"
+
+
+@dataclass
+class Config:
+    """Every tunable knob. Loaded from config.json, overridable from the CLI."""
+
+    # ------------------------------------------------------------------
+    # Camera
+    # ------------------------------------------------------------------
+    camera_index: int = 0
+    camera_api: str = "dshow"  # dshow | msmf | any  (Windows: dshow opens fastest)
+    frame_width: int = 640
+    frame_height: int = 480
+    target_fps: float = 12.0  # processing rate; lower burns less CPU
+    camera_warmup_frames: int = 5
+
+    # ------------------------------------------------------------------
+    # Identity
+    # ------------------------------------------------------------------
+    identity: str = ""  # "" -> use the only enrolled identity, or all of them
+    match_threshold: float = 0.0  # 0 -> use the backend's recommended value
+    match_margin: float = 0.08  # below (threshold - margin) a face counts as a stranger
+    confirm_frames: int = 2  # consecutive matches needed to (re)confirm the owner
+
+    # ------------------------------------------------------------------
+    # Detection
+    # ------------------------------------------------------------------
+    backend: str = "auto"  # auto | opencv | insightface
+    detect_width: int = 640  # frames are downscaled to this before detection
+    det_threshold: float = 0.55  # YuNet/SCRFD score floor
+    min_face_px: int = 48
+    # The largest face is recognised on every frame; any *additional* faces in
+    # shot (the stranger check) only every Nth, since they are rarely urgent.
+    recognize_every: int = 2
+
+    # Rotated-frame retry: catches a head tilted onto a hand or resting on a desk,
+    # where an upright detector sees nothing at all.
+    rotation_retry: bool = True
+    rotation_angles: tuple[int, ...] = (-35, 35, -60, 60)
+    rotation_retry_every: int = 3  # only every Nth frame with no face (it is not free)
+
+    # ------------------------------------------------------------------
+    # Presence fallbacks (the "head down / looking away" layer)
+    # ------------------------------------------------------------------
+    use_body_fallback: bool = True  # MediaPipe pose: shoulders/head still visible
+    body_min_visibility: float = 0.55
+    use_motion_fallback: bool = True  # last resort: movement inside the owner's region
+    motion_threshold: float = 3.0  # mean abs frame delta inside the ROI
+
+    # How long each weaker signal may keep you "present" after the last real
+    # face match. Strong evidence resets all of them.
+    track_grace_s: float = 30.0  # unrecognised face sitting in the owner's tracked box
+    body_grace_s: float = 120.0  # body visible, face not
+    motion_grace_s: float = 20.0  # movement only
+
+    # ------------------------------------------------------------------
+    # Locking
+    # ------------------------------------------------------------------
+    absence_timeout_s: float = 8.0
+    lock_cooldown_s: float = 10.0  # ignore further lock requests for this long
+    lock_on_unknown: bool = False  # stranger at the desk with the owner gone -> lock now
+    unknown_confirm_s: float = 2.0  # a stranger must persist this long to count
+    dry_run: bool = False  # log the lock instead of performing it
+    release_camera_when_locked: bool = True  # drop the handle so the webcam LED goes out
+
+    # ------------------------------------------------------------------
+    # Interface
+    # ------------------------------------------------------------------
+    preview: bool = True
+    mirror_preview: bool = True  # selfie view; the processed frame is never mirrored
+    window_name: str = "Presence Lock"
+    log_level: str = "INFO"
+
+    # ------------------------------------------------------------------
+    # (de)serialisation
+    # ------------------------------------------------------------------
+    @classmethod
+    def load(cls, path: Path | None = None) -> "Config":
+        path = path or DEFAULT_CONFIG_PATH
+        if not path.exists():
+            return cls()
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return cls.from_dict(raw)
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "Config":
+        known = {f.name: f for f in fields(cls)}
+        kwargs: dict[str, Any] = {}
+        for key, value in raw.items():
+            if key.startswith("_") or key not in known:
+                continue
+            if known[key].type == "tuple[int, ...]" and isinstance(value, list):
+                value = tuple(value)
+            kwargs[key] = value
+        return cls(**kwargs)
+
+    def to_dict(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["rotation_angles"] = list(self.rotation_angles)
+        return data
+
+    def save(self, path: Path | None = None) -> Path:
+        path = path or DEFAULT_CONFIG_PATH
+        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        return path
+
+    def apply_overrides(self, overrides: dict[str, Any]) -> "Config":
+        """Apply non-None CLI overrides in place and return self."""
+        known = {f.name for f in fields(self)}
+        for key, value in overrides.items():
+            if value is None or key not in known:
+                continue
+            setattr(self, key, value)
+        return self
+
+
+def ensure_dirs() -> None:
+    for directory in (MODELS_DIR, DATA_DIR, IDENTITY_DIR, LOG_DIR):
+        directory.mkdir(parents=True, exist_ok=True)

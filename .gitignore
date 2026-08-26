@@ -1,0 +1,27 @@
+# Biometric data — never commit face templates. Recreated by ensure_dirs().
+data/
+
+# Downloaded model weights (fetched by `python plock.py models`)
+models/
+
+# Runtime
+logs/
+config.json
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
