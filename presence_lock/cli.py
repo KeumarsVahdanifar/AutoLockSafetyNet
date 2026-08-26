@@ -39,20 +39,39 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-rotation-retry", dest="rotation_retry", action="store_false", default=None
     )
 
+    # ---- shared tuning options ----
+    tuning = argparse.ArgumentParser(add_help=False)
+    tuning.add_argument(
+        "--identity", dest="identity", default=None, help="which enrolled name to use"
+    )
+    tuning.add_argument(
+        "--timeout", dest="absence_timeout_s", type=float, default=None,
+        help="seconds unrecognised before locking (default 5)",
+    )
+    tuning.add_argument("--threshold", dest="match_threshold", type=float, default=None)
+    # Holds are 0 by default: only a recognised face keeps the session open.
+    # Passing one buys a longer fuse for that evidence and switches on the
+    # detector it needs.
+    tuning.add_argument(
+        "--body-hold", dest="body_hold_s", type=float, default=None,
+        help="max seconds unrecognised while your body is visible "
+             "(head down, turned away); enables the pose model",
+    )
+    tuning.add_argument(
+        "--track-hold", dest="track_hold_s", type=float, default=None,
+        help="max seconds unrecognised while an unscored face sits in your tracked box",
+    )
+    tuning.add_argument(
+        "--motion-hold", dest="motion_hold_s", type=float, default=None,
+        help="max seconds unrecognised while there is movement where you were",
+    )
+
     # ---- run ----
-    run = sub.add_parser("run", parents=[common], help="start the presence monitor (default)")
-    run.add_argument("--identity", dest="identity", default=None, help="which enrolled name to use")
-    run.add_argument("--timeout", dest="absence_timeout_s", type=float, default=None)
-    run.add_argument("--threshold", dest="match_threshold", type=float, default=None)
+    run = sub.add_parser(
+        "run", parents=[common, tuning], help="start the presence monitor (default)"
+    )
     run.add_argument("--fps", dest="target_fps", type=float, default=None)
     run.add_argument("--no-preview", dest="preview", action="store_false", default=None)
-    run.add_argument(
-        "--no-body", dest="use_body_fallback", action="store_false", default=None,
-        help="disable the head-down / turned-away pose fallback",
-    )
-    run.add_argument(
-        "--no-motion", dest="use_motion_fallback", action="store_false", default=None
-    )
     run.add_argument(
         "--no-lock-on-unknown", dest="lock_on_unknown", action="store_false", default=None,
         help="do not lock just because an unrecognised face is at the desk",
@@ -63,12 +82,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     # ---- test ----
-    test = sub.add_parser(
-        "test", parents=[common], help="live view of scores and evidence; never locks"
+    sub.add_parser(
+        "test",
+        parents=[common, tuning],
+        help="live view of scores, evidence and the countdown; never locks",
     )
-    test.add_argument("--identity", dest="identity", default=None)
-    test.add_argument("--timeout", dest="absence_timeout_s", type=float, default=None)
-    test.add_argument("--threshold", dest="match_threshold", type=float, default=None)
 
     # ---- enroll ----
     enroll = sub.add_parser(parents=[common], name="enroll", help="train the monitor on your face")
@@ -101,7 +119,7 @@ def _config_from_args(args: argparse.Namespace) -> Config:
         if key not in {"command", "config", "func", "name", "samples", "append", "from_images",
                        "force", "write", "pose_timeout"}
     }
-    return cfg.apply_overrides(overrides)
+    return cfg.apply_overrides(overrides).normalise()
 
 
 # ----------------------------------------------------------------------

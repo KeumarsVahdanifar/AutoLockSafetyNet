@@ -12,9 +12,10 @@ This version fixes both ends of that problem.
 |---|---|---|
 | detector | Haar cascade, frontal only | YuNet (or InsightFace SCRFD) |
 | who counts | anybody with a face | only the enrolled identity |
-| head down / turned away | locks on you | held by pose + tracking fallbacks |
+| head down / turned away | locks on you | recognised through it; opt-in `--body-hold` for the rest |
 | head tilted | missed | rotated-frame retry |
-| stranger at your desk | keeps the session open | optional immediate lock |
+| stranger at your desk | keeps the session open | locks in 2 s |
+| countdown | resets on any face | resets only on *your* face |
 | config | edit the source | `config.json` + CLI flags |
 
 ## Install
@@ -66,32 +67,49 @@ python plock.py identities                         # what is enrolled
 Re-run with `--append` after a haircut, new glasses, or a lighting change at
 your desk. It is the cheapest fix for "it stopped recognising me".
 
-## 2. Staying detected with your head down or turned away
+## 2. The countdown
 
-Presence is decided from four layers of evidence, strongest first. Each weaker
-layer may only **extend** a presence that face recognition already established,
-and each one expires on its own clock measured from the last real recognition:
+**Recognition is the only thing that resets the clock.** The moment a frame goes
+by without your face being recognised, the countdown starts and keeps falling —
+a face in shot, a body, movement, none of it stops the clock. At zero the
+workstation locks.
 
+Being *seen* is not enough. Being *recognised* is.
+
+Detection still works hard to recognise you in awkward poses, and that is where
+the enrolled poses earn their keep: the frame is retried rotated by ±35° and
+±60° when an upright detector finds nothing, which recovers a head tilted onto a
+hand, and a template enrolled with the "down" and "left/right" poses keeps
+scoring you while you work.
+
+### Buying time for working head-down
+
+Three weaker signals are still computed and shown on the preview, and each has a
+**hold** — the maximum seconds you may go unrecognised while that evidence is in
+shot. All three ship at `0`, meaning they hold nothing:
+
+| signal | what it sees | config | default |
+|---|---|---|---|
+| tracked | a face in your tracked box that scores too low to confirm | `track_hold_s` | `0` |
+| body | no face at all, but MediaPipe still sees your head and shoulders | `body_hold_s` | `0` |
+| motion | movement in the region you last occupied | `motion_hold_s` | `0` |
+
+A hold is a **ceiling, not a reset**: with `--body-hold 60`, looking down at your
+keyboard gives you at most 60 seconds before the lock, and the countdown visibly
+falls 60 → 0 the whole time. Only looking back at the camera puts it back to
+full.
+
+```bash
+python plock.py run --body-hold 60      # up to 60 s head-down, pose model on
+python plock.py run                     # strict: 5 s, recognition or nothing
 ```
-face     you were recognised in this frame                    -> resets everything
-tracked  a face sits in your tracked box but scores too low   -> 30 s  (track_grace_s)
-         to recognise: steep yaw, backlight, motion blur
-body     no face at all, but MediaPipe still sees your head   -> 120 s (body_grace_s)
-         and shoulders: head down over the keyboard, turned away
-motion   nothing but movement in the region you last occupied -> 20 s  (motion_grace_s)
-```
 
-So looking down at your keyboard for two minutes keeps the session open; an
-empty chair with a moving curtain behind it does not, because the graces run out
-and only a real recognition resets them. After a lock, all weak evidence is
+A confirmed stranger cancels every hold, and after a lock all weak evidence is
 discarded — nothing but your face re-arms the monitor.
-
-On top of that, when an upright detector finds nothing the frame is retried
-rotated by ±35° and ±60°, which recovers a head tilted onto a hand.
 
 ## 3. Locking
 
-- Locks after `absence_timeout_s` (default 3 s) with no evidence.
+- Locks `absence_timeout_s` (default 5 s) after the last recognition.
 - Locks after `unknown_confirm_s` (default 2 s) when an unrecognised face is at
   the desk and you are not. Seeing you resets that timer, so a colleague
   reading over your shoulder while you sit there is not an intruder.
@@ -108,8 +126,9 @@ rotated by ±35° and ±60°, which recovers a head tilted onto a hand.
 ## Commands
 
 ```bash
-python plock.py run [--timeout 3] [--threshold 0.4] [--no-preview] [--dry-run]
-                    [--no-body] [--no-motion] [--no-lock-on-unknown] [--fps 12]
+python plock.py run [--timeout 5] [--threshold 0.4] [--no-preview] [--dry-run]
+                    [--body-hold 60] [--track-hold 20] [--motion-hold 10]
+                    [--no-lock-on-unknown] [--fps 12]
                     [--camera 0] [--backend auto|opencv|insightface]
 python plock.py test          # same pipeline, locking disabled
 python plock.py enroll --name <you>
@@ -129,11 +148,12 @@ flags override the file. The knobs you are most likely to touch:
 
 | key | default | meaning |
 |---|---|---|
-| `absence_timeout_s` | `3.0` | seconds of no evidence before locking |
+| `absence_timeout_s` | `5.0` | seconds after the last recognition before locking |
 | `match_threshold` | `0.0` | cosine threshold; `0` = the backend's own (SFace `0.363`) |
 | `match_margin` | `0.08` | below `threshold - margin` a face is a stranger |
 | `confirm_frames` | `2` | consecutive matches before you count as recognised |
-| `track_grace_s` / `body_grace_s` / `motion_grace_s` | `30` / `120` / `20` | how long each weak layer may extend presence |
+| `track_hold_s` / `body_hold_s` / `motion_hold_s` | `0` / `0` / `0` | ceiling on seconds unrecognised while that evidence is in shot; `0` holds nothing |
+| `evidence_hold_s` | `1.5` | how long a signal counts as active after its last sighting |
 | `target_fps` | `12.0` | processing rate — the main CPU dial |
 | `recognize_every` | `2` | run the embedding model every Nth frame |
 | `lock_on_unknown` | `true` | lock when a stranger is at the desk and you are not |
@@ -146,12 +166,13 @@ flags override the file. The knobs you are most likely to touch:
 
 | symptom | fix |
 |---|---|
+| locks while you are working head-down | `--body-hold 60`, and `enroll --append` in that pose |
 | locks while you are working | raise `absence_timeout_s`, or `enroll --append` in that pose |
 | does not recognise you | lower `match_threshold` (try `0.32`), add samples, improve lighting |
 | recognises other people | raise `match_threshold` (try `0.40`), re-enrol with better light |
 | locks on you as an "unrecognised face" | raise `match_margin` (try `0.15`), `enroll --append` in that pose, or `--no-lock-on-unknown` |
-| CPU too high | lower `target_fps`, raise `recognize_every`, `--no-body` |
-| stays open with the chair empty | lower `body_grace_s`, or `--no-motion` |
+| CPU too high | lower `target_fps`, raise `recognize_every`, leave `body_hold_s` at `0` |
+| stays open with the chair empty | lower `body_hold_s` / `motion_hold_s` back toward `0` |
 
 Run `python plock.py test` and watch the similarity printed on each box — that
 number is what every threshold is compared against.

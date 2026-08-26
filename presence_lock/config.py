@@ -57,21 +57,33 @@ class Config:
     # ------------------------------------------------------------------
     # Presence fallbacks (the "head down / looking away" layer)
     # ------------------------------------------------------------------
-    use_body_fallback: bool = True  # MediaPipe pose: shoulders/head still visible
+    # Off by default: with the *_hold_s ceilings at 0 these signals cannot
+    # affect the lock decision, so running them would only cost CPU. Turn one
+    # on together with its hold to give yourself head-down time again.
+    use_body_fallback: bool = False  # MediaPipe pose: shoulders/head still visible
     body_min_visibility: float = 0.55
-    use_motion_fallback: bool = True  # last resort: movement inside the owner's region
+    use_motion_fallback: bool = False  # last resort: movement inside the owner's region
     motion_threshold: float = 3.0  # mean abs frame delta inside the ROI
 
-    # How long each weaker signal may keep you "present" after the last real
-    # face match. Strong evidence resets all of them.
-    track_grace_s: float = 30.0  # unrecognised face sitting in the owner's tracked box
-    body_grace_s: float = 120.0  # body visible, face not
-    motion_grace_s: float = 20.0  # movement only
+    # The countdown starts the moment recognition stops and runs continuously.
+    # These are the *maximum* seconds it may reach while that evidence is in
+    # shot — a ceiling on how long you may go unrecognised, never a reset.
+    #
+    # 0 disables the layer's influence entirely, which is the default: only
+    # your recognised face keeps the session open. Raise one (e.g.
+    # body_hold_s = 60) together with its use_*_fallback flag to buy back time
+    # for working head-down.
+    track_hold_s: float = 0.0  # unrecognised face sitting in the owner's tracked box
+    body_hold_s: float = 0.0  # body visible, face not — head down, turned away
+    motion_hold_s: float = 0.0  # movement only
+    # A layer counts as active for this long after its last sighting, so one
+    # dropped pose frame does not slam the deadline shut mid-countdown.
+    evidence_hold_s: float = 1.5
 
     # ------------------------------------------------------------------
     # Locking
     # ------------------------------------------------------------------
-    absence_timeout_s: float = 3.0
+    absence_timeout_s: float = 5.0
     lock_cooldown_s: float = 10.0  # ignore further lock requests for this long
     lock_on_unknown: bool = True  # stranger at the desk with the owner gone -> lock now
     unknown_confirm_s: float = 2.0  # a stranger must persist this long to count
@@ -118,6 +130,20 @@ class Config:
         path = path or DEFAULT_CONFIG_PATH
         path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
         return path
+
+    def normalise(self) -> "Config":
+        """Switch on the detectors that the configured holds actually need.
+
+        A hold without its detector would silently do nothing, so asking for
+        `--body-hold 60` turns the pose model on. The reverse is deliberately
+        not done: a detector with a zero hold still draws its evidence on the
+        preview, which is useful in `test`.
+        """
+        if self.body_hold_s > 0:
+            self.use_body_fallback = True
+        if self.motion_hold_s > 0:
+            self.use_motion_fallback = True
+        return self
 
     def apply_overrides(self, overrides: dict[str, Any]) -> "Config":
         """Apply non-None CLI overrides in place and return self."""

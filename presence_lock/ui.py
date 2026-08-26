@@ -107,14 +107,18 @@ def draw_overlay(
     else:
         state_color = AMBER
 
-    countdown = (
-        "--"
-        if math.isinf(result.seconds_to_lock)
-        else f"{min(result.seconds_to_lock, timeout_s):.1f}s"
-    )
+    # Never clamp to `timeout_s`: the deadline is anchored to the last
+    # recognition, so this figure has to be free to show the longer fuse a
+    # weak layer buys — and to be seen ticking down the whole way.
+    countdown = "--" if math.isinf(result.seconds_to_lock) else f"{result.seconds_to_lock:.1f}s"
     lines = [
         (
-            f"presence: {result.evidence_label:<13} lock in: {countdown}",
+            f"presence: {result.evidence_label:<13} lock in: {countdown}"
+            + (
+                f"   unrecognised {result.unrecognised_for:.0f}s"
+                if result.evidence != EV_FACE and result.unrecognised_for > 0
+                else ""
+            ),
             state_color,
         ),
         (
@@ -133,7 +137,7 @@ def draw_overlay(
         )
     _banner(frame, lines)
 
-    if result.seconds_to_lock <= min(3.0, timeout_s) and result.evidence == EV_NONE:
+    if result.seconds_to_lock <= min(3.0, timeout_s) and result.evidence != EV_FACE:
         cv2.rectangle(frame, (0, 0), (frame.shape[1] - 1, frame.shape[0] - 1), RED, 4)
 
     hint = "ESC quit  |  P pause  |  L lock now"

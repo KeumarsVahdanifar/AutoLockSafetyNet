@@ -76,7 +76,7 @@ class FrameResult:
     motion: bool = False
     stranger_for: float = 0.0  # seconds an unrecognised face has been in frame
     evidence: str = EV_NONE
-    absent_for: float = 0.0
+    unrecognised_for: float = 0.0  # seconds since the last confirmed recognition
     seconds_to_lock: float = math.inf
     should_lock: bool = False
     lock_reason: str = ""
@@ -142,11 +142,12 @@ class PresenceEngine:
 
         now = time.monotonic()
         self._frame_index = 0
-        self._last_present = now
         # Zero, not `now`: the weak layers may only extend a presence that a
         # real recognition established, so on a cold start nobody gets a free
         # body/tracking window before the owner has been seen once.
         self._last_strong = 0.0
+        self._armed_at = now  # fallback anchor until the first recognition
+        self._seen: dict[str, float] = {}  # last time each layer produced evidence
         self._match_streak = 0
         self._stranger_since: float | None = None
         self._track_box: tuple[int, int, int, int] | None = None
@@ -170,8 +171,9 @@ class PresenceEngine:
         seen before body or motion evidence counts for anything.
         """
         now = time.monotonic()
-        self._last_present = now if present else 0.0
+        self._armed_at = now if present else 0.0
         self._last_strong = 0.0
+        self._seen.clear()
         self._match_streak = 0
         self._stranger_since = None
         self._track_box = None
@@ -187,7 +189,8 @@ class PresenceEngine:
         # Weak evidence must not resurrect a presence after a lock: only a real
         # recognition may re-arm the monitor.
         self._last_strong = 0.0
-        self._last_present = 0.0
+        self._armed_at = 0.0
+        self._seen.clear()
         self._track_box = None
         self._stranger_since = None
 
@@ -222,11 +225,13 @@ class PresenceEngine:
         ]
 
         # --- strongest layer: a confirmed recognition -------------------
+        # This is the only thing that resets the countdown. Everything below
+        # merely reports what is still visible.
         if owner is not None:
             self._match_streak += 1
             if self._match_streak >= max(1, cfg.confirm_frames):
                 self._last_strong = now
-                self._last_present = now
+                self._seen[EV_FACE] = now
                 result.evidence = EV_FACE
             self._track_box = owner.det.bbox
             self._track_updated = now
@@ -243,19 +248,19 @@ class PresenceEngine:
             self._last_strong = 0.0
             self._track_box = None
 
-        # --- weaker layers ---------------------------------------------
+        # --- weaker layers: reported, never a reset ---------------------
         if result.evidence == EV_NONE:
             tracked = next((f for f in scored if f.tracked), None)
-            if tracked is not None and self._within(now, cfg.track_grace_s):
-                self._last_present = now
+            if tracked is not None:
+                self._seen[EV_TRACKED] = now
                 self._track_box = tracked.det.bbox
                 self._track_updated = now
                 result.evidence = EV_TRACKED
 
         if result.evidence == EV_NONE and self.body is not None and self.body.available:
             result.body = self.body.detect(frame)
-            if result.body.present and self._within(now, cfg.body_grace_s):
-                self._last_present = now
+            if result.body.present:
+                self._seen[EV_BODY] = now
                 if result.body.bbox:
                     self._track_box = result.body.bbox
                     self._track_updated = now
@@ -264,26 +269,24 @@ class PresenceEngine:
         if self.motion is not None:
             roi = self._expanded_track_box(frame.shape) if self._track_box else None
             result.motion = self.motion.update(frame, roi)
-            if (
-                result.evidence == EV_NONE
-                and result.motion
-                and self._within(now, cfg.motion_grace_s)
-            ):
-                self._last_present = now
-                result.evidence = EV_MOTION
+            if result.motion:
+                self._seen[EV_MOTION] = now
+                if result.evidence == EV_NONE:
+                    result.evidence = EV_MOTION
 
         if result.evidence != self._last_evidence:
             log.debug("presence evidence: %s -> %s", self._last_evidence, result.evidence)
             self._last_evidence = result.evidence
 
         # --- lock decision ---------------------------------------------
-        result.absent_for = max(0.0, now - self._last_present)
-        result.seconds_to_lock = max(0.0, cfg.absence_timeout_s - result.absent_for)
+        lock_at = self._deadline(now)
+        result.unrecognised_for = max(0.0, now - (self._last_strong or self._armed_at))
+        result.seconds_to_lock = max(0.0, lock_at - now)
 
         if owner is not None and self._match_streak >= max(1, cfg.confirm_frames):
             self._locked = False  # owner is back: re-arm
 
-        reason = self._lock_reason(result, owner, now)
+        reason = self._lock_reason(result, now, lock_at)
         if reason and not self._locked and now >= self._lock_until:
             result.should_lock = True
             result.lock_reason = reason
@@ -291,12 +294,42 @@ class PresenceEngine:
         return result
 
     # ------------------------------------------------------------------
+    def _deadline(self, now: float) -> float:
+        """The moment the workstation locks unless you are recognised first.
+
+        Anchored to the last recognition, never to the weak evidence itself —
+        that is what makes the countdown run down instead of sitting at full
+        while a body is in shot.
+
+        By default every `*_hold_s` is 0, so nothing but your recognised face
+        moves this deadline. A layer given a non-zero hold may raise it to
+        `last recognition + hold` and no further, which is a ceiling on how
+        long you may go unrecognised rather than an extension. Such a layer
+        counts as active for `evidence_hold_s` after its last sighting, so one
+        dropped frame does not slam the deadline shut mid-countdown.
+        """
+        cfg = self.cfg
+        anchor = self._last_strong or self._armed_at
+        lock_at = anchor + cfg.absence_timeout_s
+
+        if self._last_strong <= 0.0:
+            return lock_at  # never recognised yet: nothing may extend it
+
+        for layer, hold in (
+            (EV_TRACKED, cfg.track_hold_s),
+            (EV_BODY, cfg.body_hold_s),
+            (EV_MOTION, cfg.motion_hold_s),
+        ):
+            if hold <= 0.0:
+                continue
+            last_seen = self._seen.get(layer, 0.0)
+            if last_seen > 0.0 and (now - last_seen) <= cfg.evidence_hold_s:
+                lock_at = max(lock_at, self._last_strong + hold)
+        return lock_at
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-    def _within(self, now: float, grace: float) -> bool:
-        """True while the last real recognition is recent enough for a weak layer."""
-        return self._last_strong > 0.0 and (now - self._last_strong) <= grace
-
     def _expanded_track_box(self, shape: tuple[int, ...]) -> tuple[int, int, int, int]:
         x, y, w, h = self._track_box  # type: ignore[misc]
         height, width = shape[:2]
@@ -311,8 +344,10 @@ class PresenceEngine:
         """Attach identity scores, embedding only as often as configured."""
         cfg = self.cfg
         scored: list[ScoredFace] = []
+        # How long a stale box still counts as "yours" for display purposes.
+        # Independent of track_hold_s, which is 0 by default.
         track_fresh = self._track_box is not None and (now - self._track_updated) <= max(
-            cfg.track_grace_s, 5.0
+            cfg.track_hold_s, 5.0
         )
         # The largest face (index 0) is always recognised, so noticing that you
         # came back is never delayed. Extra faces — the stranger check — are
@@ -350,11 +385,14 @@ class PresenceEngine:
             self._stranger_since = now
         return now - self._stranger_since
 
-    def _lock_reason(self, result: FrameResult, owner: ScoredFace | None, now: float) -> str:
+    def _lock_reason(self, result: FrameResult, now: float, lock_at: float) -> str:
         cfg = self.cfg
 
-        if result.absent_for >= cfg.absence_timeout_s:
-            return f"absent for {result.absent_for:.0f}s (last evidence: {result.evidence_label})"
+        if now >= lock_at:
+            return (
+                f"not recognised for {result.unrecognised_for:.0f}s "
+                f"(last evidence: {result.evidence_label})"
+            )
 
         if cfg.lock_on_unknown and result.stranger_for >= cfg.unknown_confirm_s:
             best = max((f.similarity for f in result.strangers), default=float("nan"))

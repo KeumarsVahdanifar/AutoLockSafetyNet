@@ -100,6 +100,11 @@ def make_config(**overrides) -> Config:
     cfg.rotation_retry = False
     cfg.absence_timeout_s = 5.0
     cfg.lock_cooldown_s = 10.0
+    # Shipped defaults are all 0 (only recognition counts); tests that exercise
+    # a layer opt into a hold explicitly.
+    cfg.track_hold_s = 0.0
+    cfg.body_hold_s = 0.0
+    cfg.motion_hold_s = 0.0
     for key, value in overrides.items():
         setattr(cfg, key, value)
     return cfg
@@ -143,84 +148,130 @@ class PresenceEngineTests(unittest.TestCase):
         result = engine.process(FRAME)
         self.assertTrue(result.should_lock)
         self.assertEqual(result.evidence, EV_NONE)
-        self.assertIn("absent", result.lock_reason)
+        self.assertIn("not recognised", result.lock_reason)
 
-    def test_unrecognisable_face_in_tracked_box_holds_presence(self):
-        """Steep pose: the face is there but scores too low to recognise."""
-        engine = self.build(make_config(track_grace_s=30.0))
+    def test_countdown_runs_while_a_face_is_visible_but_unrecognised(self):
+        """The headline rule: not recognised means the clock is running."""
+        cfg = make_config(absence_timeout_s=5.0)
+        engine = self.build(cfg)
         self.backend.set(((10, 10, 80, 80), OWNER))
         engine.process(FRAME)
 
+        # A face is right there, in the tracked box, every frame — and the
+        # countdown still falls, because it is not a recognised face.
         self.backend.set(((12, 12, 80, 80), BLURRY_OWNER))
+        remaining = []
         for _ in range(4):
-            self.clock.advance(3.0)
+            self.clock.advance(1.0)
             result = engine.process(FRAME)
-            self.assertFalse(result.should_lock)
-        self.assertEqual(result.evidence, presence_mod.EV_TRACKED)
+            remaining.append(result.seconds_to_lock)
 
-    def test_tracked_grace_expires(self):
-        engine = self.build(make_config(track_grace_s=10.0))
-        self.backend.set(((10, 10, 80, 80), OWNER))
-        engine.process(FRAME)
+        self.assertEqual(remaining, sorted(remaining, reverse=True))
+        self.assertEqual(remaining, [4.0, 3.0, 2.0, 1.0])
+        self.assertGreater(result.unrecognised_for, 0.0)
 
-        self.backend.set(((12, 12, 80, 80), BLURRY_OWNER))
-        self.clock.advance(11.0)
-        engine.process(FRAME)
-        self.clock.advance(6.0)
+        self.clock.advance(1.5)
         self.assertTrue(engine.process(FRAME).should_lock)
 
-    def test_head_down_body_fallback_prevents_lock(self):
-        cfg = make_config(use_body_fallback=True, body_grace_s=120.0)
+    def test_recognition_is_the_only_thing_that_resets_the_clock(self):
+        cfg = make_config(absence_timeout_s=5.0)
+        engine = self.build(cfg)
+        self.backend.set(((10, 10, 80, 80), OWNER))
+        engine.process(FRAME)
+
+        self.backend.set(((12, 12, 80, 80), BLURRY_OWNER))
+        self.clock.advance(3.0)
+        self.assertAlmostEqual(engine.process(FRAME).seconds_to_lock, 2.0)
+
+        self.backend.set(((10, 10, 80, 80), OWNER))  # you look back at the camera
+        self.clock.advance(1.0)
+        result = engine.process(FRAME)
+        self.assertAlmostEqual(result.seconds_to_lock, 5.0)
+        self.assertEqual(result.unrecognised_for, 0.0)
+
+    def test_a_hold_caps_the_countdown_without_resetting_it(self):
+        """Opt-in behaviour: a hold buys a longer fuse, not a fresh one."""
+        cfg = make_config(absence_timeout_s=5.0, track_hold_s=10.0)
+        engine = self.build(cfg)
+        self.backend.set(((10, 10, 80, 80), OWNER))
+        engine.process(FRAME)
+
+        self.backend.set(((12, 12, 80, 80), BLURRY_OWNER))
+        self.clock.advance(4.0)
+        first = engine.process(FRAME)
+        self.assertEqual(first.evidence, presence_mod.EV_TRACKED)
+        self.assertAlmostEqual(first.seconds_to_lock, 6.0)  # 10 - 4, still falling
+
+        self.clock.advance(4.0)
+        self.assertAlmostEqual(engine.process(FRAME).seconds_to_lock, 2.0)
+
+        self.clock.advance(2.5)  # past the 10 s ceiling
+        self.assertTrue(engine.process(FRAME).should_lock)
+
+    def test_a_body_alone_does_not_stop_the_lock_by_default(self):
+        """Shipped behaviour: head down, no recognised face, clock runs out."""
+        cfg = make_config(use_body_fallback=True)  # body_hold_s stays 0
         engine = self.build(cfg, StubBody(present=True))
         self.backend.set(((10, 10, 80, 80), OWNER))
         engine.process(FRAME)
 
         self.backend.set()  # head down: no face at all
+        self.clock.advance(6.0)
+        result = engine.process(FRAME)
+        self.assertEqual(result.evidence, EV_BODY)  # still reported...
+        self.assertTrue(result.should_lock)  # ...but it holds nothing
+
+    def test_body_hold_buys_head_down_time_when_enabled(self):
+        cfg = make_config(use_body_fallback=True, body_hold_s=120.0)
+        engine = self.build(cfg, StubBody(present=True))
+        self.backend.set(((10, 10, 80, 80), OWNER))
+        engine.process(FRAME)
+
+        self.backend.set()
         for _ in range(5):
             self.clock.advance(10.0)
             result = engine.process(FRAME)
             self.assertFalse(result.should_lock, "body evidence should hold the session open")
         self.assertEqual(result.evidence, EV_BODY)
         self.assertTrue(result.body.head_down)
+        self.assertAlmostEqual(result.seconds_to_lock, 70.0)  # 120 - 50, falling
 
-    def test_body_fallback_expires_so_an_empty_chair_still_locks(self):
-        cfg = make_config(use_body_fallback=True, body_grace_s=30.0)
+    def test_body_hold_expires_so_an_empty_chair_still_locks(self):
+        cfg = make_config(use_body_fallback=True, body_hold_s=30.0)
         engine = self.build(cfg, StubBody(present=True))
         self.backend.set(((10, 10, 80, 80), OWNER))
         engine.process(FRAME)
 
         self.backend.set()
         self.clock.advance(31.0)
-        engine.process(FRAME)
-        self.clock.advance(6.0)
         self.assertTrue(engine.process(FRAME).should_lock)
 
     def test_body_alone_cannot_arm_presence_after_a_lock(self):
-        cfg = make_config(use_body_fallback=True, body_grace_s=30.0)
+        cfg = make_config(use_body_fallback=True, body_hold_s=30.0)
         engine = self.build(cfg, StubBody(present=True))
         self.backend.set(((10, 10, 80, 80), OWNER))
         engine.process(FRAME)
 
         self.backend.set()
-        self.clock.advance(31.0)  # past the body grace
+        self.clock.advance(31.0)  # past the body hold
         self.assertTrue(engine.process(FRAME).should_lock)
         engine.note_locked()
 
         # A body in front of a locked machine must not count as presence.
         self.clock.advance(10.0)
         result = engine.process(FRAME)
-        self.assertEqual(result.evidence, EV_NONE)
+        self.assertEqual(result.seconds_to_lock, 0.0)
         self.assertTrue(engine.locked)
         self.assertFalse(result.should_lock)
 
     def test_body_cannot_arm_presence_on_a_cold_start(self):
         """Before the owner has ever been recognised, a body means nothing."""
-        cfg = make_config(use_body_fallback=True, body_grace_s=120.0)
+        cfg = make_config(use_body_fallback=True, body_hold_s=120.0)
         engine = self.build(cfg, StubBody(present=True))
         self.backend.set()
         self.clock.advance(6.0)
         result = engine.process(FRAME)
-        self.assertEqual(result.evidence, EV_NONE)
+        self.assertEqual(result.seconds_to_lock, 0.0)
         self.assertTrue(result.should_lock)
 
     def test_owner_return_rearms_after_lock(self):
@@ -251,7 +302,7 @@ class PresenceEngineTests(unittest.TestCase):
 
     def test_stranger_in_the_owners_tracked_box_still_locks(self):
         """Someone sitting down where you sat does not inherit your session."""
-        cfg = make_config(lock_on_unknown=True, unknown_confirm_s=2.0, track_grace_s=60.0)
+        cfg = make_config(lock_on_unknown=True, unknown_confirm_s=2.0, track_hold_s=60.0)
         engine = self.build(cfg)
         box = (10, 10, 80, 80)
         self.backend.set((box, OWNER))
@@ -273,7 +324,7 @@ class PresenceEngineTests(unittest.TestCase):
         cfg = make_config(
             lock_on_unknown=False,  # even with the intruder lock disabled
             use_body_fallback=True,
-            body_grace_s=600.0,
+            body_hold_s=600.0,
             unknown_confirm_s=2.0,
         )
         engine = self.build(cfg, StubBody(present=True))
@@ -291,7 +342,7 @@ class PresenceEngineTests(unittest.TestCase):
         self.backend.set()  # they look down; only a body is visible
         self.clock.advance(4.0)
         result = engine.process(FRAME)
-        self.assertEqual(result.evidence, EV_NONE)
+        self.assertEqual(result.seconds_to_lock, 0.0)
         self.assertTrue(result.should_lock)
 
     def test_stranger_beside_the_owner_is_not_an_intruder(self):
@@ -323,9 +374,47 @@ class PresenceEngineTests(unittest.TestCase):
         cfg = make_config(confirm_frames=3)
         engine = self.build(cfg)
         self.backend.set(((10, 10, 80, 80), OWNER))
-        self.assertEqual(engine.process(FRAME).evidence, EV_NONE)
-        self.assertEqual(engine.process(FRAME).evidence, EV_NONE)
-        self.assertEqual(engine.process(FRAME).evidence, EV_FACE)
+        # Until the streak is met the match is not trusted, so the clock keeps
+        # running even though the face is right there.
+        self.assertNotEqual(engine.process(FRAME).evidence, EV_FACE)
+        self.clock.advance(1.0)
+        second = engine.process(FRAME)
+        self.assertNotEqual(second.evidence, EV_FACE)
+        self.assertLess(second.seconds_to_lock, 5.0)
+
+        self.clock.advance(1.0)
+        third = engine.process(FRAME)
+        self.assertEqual(third.evidence, EV_FACE)
+        self.assertAlmostEqual(third.seconds_to_lock, 5.0)
+
+
+class ShippedDefaultsTests(unittest.TestCase):
+    """The defaults a user gets with no config.json."""
+
+    def test_only_recognition_holds_the_session_open(self):
+        cfg = Config()
+        self.assertEqual(cfg.absence_timeout_s, 5.0)
+        self.assertEqual(cfg.track_hold_s, 0.0)
+        self.assertEqual(cfg.body_hold_s, 0.0)
+        self.assertEqual(cfg.motion_hold_s, 0.0)
+        self.assertFalse(cfg.use_body_fallback)
+        self.assertFalse(cfg.use_motion_fallback)
+        self.assertTrue(cfg.lock_on_unknown)
+
+    def test_a_hold_switches_on_the_detector_it_needs(self):
+        cfg = Config()
+        cfg.body_hold_s = 60.0
+        cfg.motion_hold_s = 10.0
+        cfg.normalise()
+        self.assertTrue(cfg.use_body_fallback)
+        self.assertTrue(cfg.use_motion_fallback)
+
+    def test_a_detector_without_a_hold_is_left_alone(self):
+        cfg = Config()
+        cfg.use_body_fallback = True  # preview-only, as `test` uses it
+        cfg.normalise()
+        self.assertTrue(cfg.use_body_fallback)
+        self.assertEqual(cfg.body_hold_s, 0.0)
 
 
 class IdentityTests(unittest.TestCase):
