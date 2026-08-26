@@ -80,6 +80,7 @@ class FrameResult:
     seconds_to_lock: float = math.inf
     should_lock: bool = False
     lock_reason: str = ""
+    withheld_reason: str = ""  # a safety guard vetoed the lock
     rotated: bool = False
 
     @property

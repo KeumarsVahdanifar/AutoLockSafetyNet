@@ -1,4 +1,4 @@
-"""Presence Lock — lock the workstation when *you* stop sitting in front of it.
+"""AutoLock Safety Net — lock the workstation when *you* stop sitting in front of it.
 
 Layered presence detection:
   1. face detection + face recognition (only the enrolled identity counts),

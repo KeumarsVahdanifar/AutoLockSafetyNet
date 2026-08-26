@@ -23,7 +23,9 @@ class Config:
     # Camera
     # ------------------------------------------------------------------
     camera_index: int = 0
-    camera_api: str = "dshow"  # dshow | msmf | any  (Windows: dshow opens fastest)
+    # auto picks the right backend per platform: DirectShow on Windows,
+    # AVFoundation on macOS, V4L2 on Linux. Override only for odd hardware.
+    camera_api: str = "auto"  # auto | dshow | msmf | avfoundation | v4l2 | gstreamer | any
     frame_width: int = 640
     frame_height: int = 480
     target_fps: float = 12.0  # processing rate; lower burns less CPU
@@ -91,18 +93,31 @@ class Config:
     release_camera_when_locked: bool = True  # drop the handle so the webcam LED goes out
 
     # ------------------------------------------------------------------
+    # Safety — guards against locking you out of your own machine
+    # ------------------------------------------------------------------
+    # Never lock until you have been recognised at least once this session.
+    # At login the camera is often still warming up and you may not be seated:
+    # the worst case of this guard is "it never locks", never "it locks forever".
+    require_initial_recognition: bool = True
+    startup_grace_s: float = 20.0  # no locking at all for this long after start
+    max_locks_per_window: int = 3  # circuit breaker: 0 disables it
+    lock_window_s: float = 120.0
+    breaker_pause_s: float = 300.0  # how long the breaker stays tripped
+    pause_file: str = "PAUSE"  # create this file in the project dir to stop locking
+
+    # ------------------------------------------------------------------
     # Interface
     # ------------------------------------------------------------------
     preview: bool = True
     mirror_preview: bool = True  # selfie view; the processed frame is never mirrored
-    window_name: str = "Presence Lock"
+    window_name: str = "AutoLock Safety Net"
     log_level: str = "INFO"
 
     # ------------------------------------------------------------------
     # (de)serialisation
     # ------------------------------------------------------------------
     @classmethod
-    def load(cls, path: Path | None = None) -> "Config":
+    def load(cls, path: Path | None = None) -> Config:
         path = path or DEFAULT_CONFIG_PATH
         if not path.exists():
             return cls()
@@ -110,7 +125,7 @@ class Config:
         return cls.from_dict(raw)
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "Config":
+    def from_dict(cls, raw: dict[str, Any]) -> Config:
         known = {f.name: f for f in fields(cls)}
         kwargs: dict[str, Any] = {}
         for key, value in raw.items():
@@ -131,7 +146,7 @@ class Config:
         path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
         return path
 
-    def normalise(self) -> "Config":
+    def normalise(self) -> Config:
         """Switch on the detectors that the configured holds actually need.
 
         A hold without its detector would silently do nothing, so asking for
@@ -145,7 +160,7 @@ class Config:
             self.use_motion_fallback = True
         return self
 
-    def apply_overrides(self, overrides: dict[str, Any]) -> "Config":
+    def apply_overrides(self, overrides: dict[str, Any]) -> Config:
         """Apply non-None CLI overrides in place and return self."""
         known = {f.name for f in fields(self)}
         for key, value in overrides.items():

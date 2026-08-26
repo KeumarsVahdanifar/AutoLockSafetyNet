@@ -12,13 +12,13 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from presence_lock import identity as identity_mod  # noqa: E402
-from presence_lock import presence as presence_mod  # noqa: E402
-from presence_lock.backends.base import FaceDet, iou, map_detection_back, rotate_frame  # noqa: E402
-from presence_lock.body import BodySignal  # noqa: E402
-from presence_lock.config import Config  # noqa: E402
-from presence_lock.identity import Identity, IdentityGallery  # noqa: E402
-from presence_lock.presence import EV_BODY, EV_FACE, EV_NONE, PresenceEngine  # noqa: E402
+from autolock import identity as identity_mod  # noqa: E402
+from autolock import presence as presence_mod  # noqa: E402
+from autolock.backends.base import FaceDet, iou, map_detection_back, rotate_frame  # noqa: E402
+from autolock.body import BodySignal  # noqa: E402
+from autolock.config import Config  # noqa: E402
+from autolock.identity import Identity, IdentityGallery  # noqa: E402
+from autolock.presence import EV_BODY, EV_FACE, EV_NONE, PresenceEngine  # noqa: E402
 
 DIM = 8
 OWNER = np.eye(DIM, dtype=np.float32)[0]
@@ -459,7 +459,7 @@ class ConfigSettingTests(unittest.TestCase):
     """`plock config --set KEY=VALUE` type handling."""
 
     def setUp(self) -> None:
-        from presence_lock.cli import coerce_setting
+        from autolock.cli import coerce_setting
 
         self.coerce = coerce_setting
         self.cfg = Config()
@@ -572,8 +572,8 @@ class MotionTests(unittest.TestCase):
 
 class OverlayTests(unittest.TestCase):
     def test_overlay_draws_without_error(self):
-        from presence_lock.presence import FrameResult, ScoredFace
-        from presence_lock.ui import draw_overlay
+        from autolock.presence import FrameResult, ScoredFace
+        from autolock.ui import draw_overlay
 
         gallery = make_gallery()
         face = ScoredFace(det=FaceDet(bbox=(10, 10, 60, 60), score=0.9))
@@ -588,8 +588,8 @@ class OverlayTests(unittest.TestCase):
 
     def test_mirrored_preview_reflects_boxes_but_not_text(self):
         """The image is flipped before drawing, so labels stay readable."""
-        from presence_lock.presence import FrameResult, ScoredFace
-        from presence_lock.ui import draw_overlay
+        from autolock.presence import FrameResult, ScoredFace
+        from autolock.ui import draw_overlay
 
         # A distinctive stripe on the left of the source image.
         frame = np.zeros((240, 320, 3), dtype=np.uint8)
@@ -616,16 +616,19 @@ class OverlayTests(unittest.TestCase):
         # The status banner is drawn after the flip, so on a uniform background
         # it renders pixel-identical either way — proof the text is not reversed.
         blank = np.zeros((240, 320, 3), dtype=np.uint8)
-        kwargs = dict(
-            timeout_s=8.0, backend_name="stub", identities=["owner"], fps=12.0
-        )
+        kwargs = {
+            "timeout_s": 8.0,
+            "backend_name": "stub",
+            "identities": ["owner"],
+            "fps": 12.0,
+        }
         mirrored_banner = draw_overlay(blank.copy(), FrameResult(), mirror=True, **kwargs)
         plain_banner = draw_overlay(blank.copy(), FrameResult(), mirror=False, **kwargs)
         self.assertTrue((mirrored_banner[:52] == plain_banner[:52]).all())
         self.assertGreater(int(mirrored_banner[:52].sum()), 0)  # something was drawn
 
     def test_mirror_box_is_an_involution(self):
-        from presence_lock.ui import mirror_box
+        from autolock.ui import mirror_box
 
         self.assertEqual(mirror_box((10, 20, 60, 60), 320), (250, 20, 60, 60))
         self.assertEqual(mirror_box(mirror_box((10, 20, 60, 60), 320), 320), (10, 20, 60, 60))

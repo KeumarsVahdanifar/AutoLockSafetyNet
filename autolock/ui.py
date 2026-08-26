@@ -73,6 +73,7 @@ def draw_overlay(
     fps: float = 0.0,
     dry_run: bool = False,
     mirror: bool = False,
+    safety: str = "",
 ) -> np.ndarray:
     # Mirror the image *before* drawing, then reflect only the geometry.
     # Flipping afterwards would reverse every label as well.
@@ -135,6 +136,10 @@ def draw_overlay(
                 RED,
             )
         )
+    if result.withheld_reason:
+        lines.append((f"lock withheld: {result.withheld_reason}", AMBER))
+    elif safety and ("DISARMED" in safety or "PAUSED" in safety or "BREAKER" in safety):
+        lines.append((safety, AMBER))
     _banner(frame, lines)
 
     if result.seconds_to_lock <= min(3.0, timeout_s) and result.evidence != EV_FACE:

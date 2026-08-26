@@ -8,10 +8,10 @@ import sys
 from pathlib import Path
 
 from . import __version__, models
-from .config import DEFAULT_CONFIG_PATH, IDENTITY_DIR, Config, ensure_dirs
+from .config import DEFAULT_CONFIG_PATH, IDENTITY_DIR, PROJECT_ROOT, Config, ensure_dirs
 from .logging_setup import quiet_third_party, setup_logging
 
-log = logging.getLogger("presence_lock")
+log = logging.getLogger("autolock")
 
 
 # ----------------------------------------------------------------------
@@ -19,10 +19,10 @@ log = logging.getLogger("presence_lock")
 # ----------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="plock",
+        prog="autolock",
         description="Lock the workstation when the enrolled person is no longer at the desk.",
     )
-    parser.add_argument("--version", action="version", version=f"presence-lock {__version__}")
+    parser.add_argument("--version", action="version", version=f"autolock-safetynet {__version__}")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="config JSON path")
     parser.add_argument("--log-level", dest="log_level", default=None, help="DEBUG/INFO/WARNING")
 
@@ -31,7 +31,11 @@ def build_parser() -> argparse.ArgumentParser:
     # ---- shared camera/backend options ----
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--camera", dest="camera_index", type=int, default=None)
-    common.add_argument("--camera-api", dest="camera_api", choices=["dshow", "msmf", "any"])
+    common.add_argument(
+        "--camera-api",
+        dest="camera_api",
+        choices=["auto", "dshow", "msmf", "avfoundation", "v4l2", "gstreamer", "any"],
+    )
     common.add_argument("--backend", dest="backend", choices=["auto", "opencv", "insightface"])
     common.add_argument("--det-threshold", dest="det_threshold", type=float, default=None)
     common.add_argument("--min-face-px", dest="min_face_px", type=int, default=None)
@@ -96,6 +100,26 @@ def build_parser() -> argparse.ArgumentParser:
     enroll.add_argument("--append", action="store_true", help="add to an existing template")
     enroll.add_argument("--from-images", type=Path, default=None, help="enrol from a photo folder")
 
+    # ---- gui ----
+    sub.add_parser("gui", help="open the desktop control panel")
+
+    # ---- autostart ----
+    auto = sub.add_parser("autostart", help="start at login (install / remove / status)")
+    auto_group = auto.add_mutually_exclusive_group()
+    auto_group.add_argument("--install", action="store_true", help="run at login")
+    auto_group.add_argument("--uninstall", action="store_true", help="stop running at login")
+    auto_group.add_argument("--status", action="store_true", help="report what is installed")
+    auto.add_argument(
+        "--arg", dest="extra_args", action="append", default=None, metavar="FLAG",
+        help="extra flag for the installed command, e.g. --arg --body-hold=60",
+    )
+
+    # ---- pause ----
+    pause = sub.add_parser("pause", help="stop or resume locking without stopping the monitor")
+    pause_group = pause.add_mutually_exclusive_group()
+    pause_group.add_argument("--on", action="store_true", help="stop locking")
+    pause_group.add_argument("--off", action="store_true", help="resume locking")
+
     # ---- identities ----
     sub.add_parser("identities", help="list enrolled identities")
 
@@ -106,7 +130,9 @@ def build_parser() -> argparse.ArgumentParser:
     # ---- doctor / config ----
     sub.add_parser("doctor", parents=[common], help="check the environment end to end")
     cfg_cmd = sub.add_parser("config", help="show, write or edit the config file")
-    cfg_cmd.add_argument("--write", action="store_true", help="write the full config to config.json")
+    cfg_cmd.add_argument(
+        "--write", action="store_true", help="write the full config to config.json"
+    )
     cfg_cmd.add_argument(
         "--set", dest="settings", action="append", metavar="KEY=VALUE", default=None,
         help="set a value and save it, e.g. --set absence_timeout_s=3 "
@@ -175,7 +201,72 @@ def cmd_enroll(args: argparse.Namespace) -> int:
         log.error("%s", exc)
         return 2
 
-    log.info("Done. Check it with:  python plock.py test")
+    log.info("Done. Check it with:  python main.py test")
+    return 0
+
+
+def cmd_gui(args: argparse.Namespace) -> int:
+    try:
+        from .gui import launch
+    except ImportError as exc:  # tkinter missing on a stripped-down Linux python
+        log.error(
+            "The GUI needs tkinter and Pillow: %s\n"
+            "  Debian/Ubuntu: sudo apt install python3-tk && pip install pillow\n"
+            "  Fedora:        sudo dnf install python3-tkinter && pip install pillow",
+            exc,
+        )
+        return 2
+    return launch(Config.load(args.config), args.config)
+
+
+def cmd_autostart(args: argparse.Namespace) -> int:
+    from . import autostart
+
+    if args.uninstall:
+        result = autostart.uninstall()
+        log.info("%s", result.message)
+        return 0 if result.ok else 1
+
+    if args.install:
+        result = autostart.install(args.extra_args)
+        if not result.ok:
+            log.error("%s", result.message)
+            return 1
+        log.info("%s", result.message)
+        log.info("  entry:   %s", result.location)
+        log.info("  command: %s", " ".join(autostart.launch_command(args.extra_args)))
+        log.info("  remove:  %s", result.undo)
+        log.info(
+            "Safety at login: the monitor stays disarmed until it recognises you once, "
+            "waits out startup_grace_s, never locks while the camera is blind, and trips "
+            "a breaker if locks fire repeatedly. Emergency stop: create the file %s",
+            Config.load(args.config).pause_file,
+        )
+        return 0
+
+    # default: status
+    if autostart.is_installed():
+        log.info("Start at login: ENABLED (%s)", autostart.entry_path())
+    else:
+        log.info("Start at login: not enabled")
+    log.info("Command: %s", " ".join(autostart.launch_command(args.extra_args)))
+    return 0
+
+
+def cmd_pause(args: argparse.Namespace) -> int:
+    from .safety import PauseSwitch
+
+    cfg = Config.load(args.config)
+    switch = PauseSwitch(PROJECT_ROOT / cfg.pause_file)
+
+    if args.on:
+        switch.engage()
+        log.info("Locking paused. Resume with `autolock pause --off` or delete %s", switch.path)
+    elif args.off:
+        switch.release()
+        log.info("Locking resumed.")
+    else:
+        log.info("Locking is %s (%s)", "PAUSED" if switch.active() else "active", switch.path)
     return 0
 
 
@@ -184,7 +275,7 @@ def cmd_identities(_args: argparse.Namespace) -> int:
 
     names = list_identities()
     if not names:
-        log.info("No identities enrolled yet. Run:  python plock.py enroll --name <you>")
+        log.info("No identities enrolled yet. Run:  python main.py enroll --name <you>")
         return 0
 
     log.info("Enrolled identities in %s:", IDENTITY_DIR)
@@ -217,15 +308,16 @@ def cmd_models(args: argparse.Namespace) -> int:
 def cmd_doctor(args: argparse.Namespace) -> int:
     import cv2
 
+    from . import autostart
     from .backends import build_backend
     from .camera import Camera
     from .identity import list_identities
-    from .lock import IS_WINDOWS, is_session_locked
+    from .lock import get_locker
 
     cfg = _config_from_args(args)
     problems = 0
 
-    log.info("presence-lock %s | python %s", __version__, sys.version.split()[0])
+    log.info("autolock-safetynet %s | python %s", __version__, sys.version.split()[0])
     log.info("opencv %s", cv2.__version__)
 
     for spec in models.REGISTRY.values():
@@ -270,14 +362,33 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if names:
         log.info("identities: %s", ", ".join(names))
     else:
-        log.error("identities: none enrolled — run `python plock.py enroll --name <you>`")
+        log.error("identities: none enrolled — run `python main.py enroll --name <you>`")
         problems += 1
 
-    if IS_WINDOWS:
-        log.info("lock api ok (session currently %s)", "locked" if is_session_locked() else "active")
+    locker = get_locker()
+    if locker.available:
+        state = locker.is_locked()
+        log.info(
+            "lock method: %s (session currently %s)",
+            locker.describe(),
+            {True: "locked", False: "active", None: "unknown"}[state],
+        )
     else:
-        log.error("locking is Windows-only; this platform is %s", sys.platform)
+        log.error("no working lock method on this platform: %s", locker.describe())
         problems += 1
+
+    log.info(
+        "safety: %s | startup grace %.0fs | breaker %d locks/%.0fs | pause file %s",
+        "disarmed until recognised" if cfg.require_initial_recognition else "arms immediately",
+        cfg.startup_grace_s,
+        cfg.max_locks_per_window,
+        cfg.lock_window_s,
+        PROJECT_ROOT / cfg.pause_file,
+    )
+    if autostart.is_installed():
+        log.info("start at login: enabled (%s)", autostart.entry_path())
+    else:
+        log.info("start at login: not enabled (`autolock autostart --install`)")
 
     log.info("%s", "All good." if problems == 0 else f"{problems} problem(s) found.")
     return 0 if problems == 0 else 1
@@ -299,7 +410,7 @@ def cmd_config(args: argparse.Namespace) -> int:
             before = getattr(cfg, key)
             setattr(cfg, key, coerce_setting(cfg, key, raw.strip()))
         except AttributeError:
-            log.error("Unknown setting %r. See `python plock.py config` for the full list.", key)
+            log.error("Unknown setting %r. See `python main.py config` for the full list.", key)
             return 2
         except ValueError as exc:
             log.error("%s", exc)
@@ -361,7 +472,10 @@ def coerce_setting(cfg: Config, key: str, raw: str):
 
 
 # ----------------------------------------------------------------------
-COMMANDS = ("run", "test", "enroll", "identities", "models", "doctor", "config")
+COMMANDS = (
+    "run", "test", "gui", "enroll", "identities", "models",
+    "doctor", "config", "autostart", "pause",
+)
 _GLOBAL_FLAGS_WITH_VALUE = ("--config", "--log-level")
 
 
@@ -399,11 +513,14 @@ def main(argv: list[str] | None = None) -> int:
     handlers = {
         "run": lambda a: cmd_run(a, arm=True),
         "test": lambda a: cmd_run(a, arm=False),
+        "gui": cmd_gui,
         "enroll": cmd_enroll,
         "identities": cmd_identities,
         "models": cmd_models,
         "doctor": cmd_doctor,
         "config": cmd_config,
+        "autostart": cmd_autostart,
+        "pause": cmd_pause,
     }
 
     try:

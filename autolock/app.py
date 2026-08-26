@@ -13,10 +13,11 @@ import numpy as np
 from .backends import build_backend
 from .body import BodyDetector
 from .camera import Camera
-from .config import Config
+from .config import PROJECT_ROOT, Config
 from .identity import IdentityGallery
-from .lock import is_session_locked, lock_workstation
-from .presence import PresenceEngine
+from .lock import get_locker
+from .presence import EV_FACE, PresenceEngine
+from .safety import SafetySupervisor
 from .ui import draw_overlay
 
 log = logging.getLogger(__name__)
@@ -26,6 +27,15 @@ class PresenceLockApp:
     def __init__(self, cfg: Config, arm: bool = True) -> None:
         self.cfg = cfg
         self.arm = arm  # False => `test` mode: everything runs, nothing locks
+        self.locker = get_locker()
+        self.safety = SafetySupervisor(
+            pause_file=PROJECT_ROOT / cfg.pause_file,
+            require_recognition=cfg.require_initial_recognition,
+            startup_grace_s=cfg.startup_grace_s,
+            max_locks=cfg.max_locks_per_window,
+            lock_window_s=cfg.lock_window_s,
+            breaker_pause_s=cfg.breaker_pause_s,
+        )
         self.backend = build_backend(cfg)
         self.gallery = IdentityGallery.load(
             name=cfg.identity,
@@ -62,12 +72,15 @@ class PresenceLockApp:
         previous_sigint = signal.signal(signal.SIGINT, self._on_sigint)
 
         log.info(
-            "Watching for %s | threshold %.3f | lock after %.0fs absent%s",
+            "Watching for %s | threshold %.3f | lock %.0fs after the last recognition%s",
             ", ".join(self.gallery.names),
             self.gallery.threshold,
             cfg.absence_timeout_s,
             "  [DRY RUN]" if cfg.dry_run else ("  [TEST — will not lock]" if not self.arm else ""),
         )
+        log.info("Lock method: %s | pause file: %s", self.locker.describe(), self.safety.pause.path)
+        if cfg.require_initial_recognition:
+            log.info("Disarmed until you are recognised once — nothing locks before then.")
         if cfg.preview:
             cv2.namedWindow(cfg.window_name, cv2.WINDOW_NORMAL)
 
@@ -92,6 +105,9 @@ class PresenceLockApp:
                     log.info("Session unlocked — monitor active")
                     session_was_locked = False
                     self.engine.reset(present=True)
+                    # Someone just typed a password: give them the startup grace
+                    # again rather than locking them straight back out.
+                    self.safety.arming.restart_grace()
 
                 if self._paused:
                     self._show_message("PAUSED — press P to resume")
@@ -102,15 +118,28 @@ class PresenceLockApp:
 
                 frame = self.camera.read()
                 if frame is None:
+                    # Blind is not the same as absent. A camera that is missing,
+                    # busy or broken must never be grounds to lock.
+                    self.safety.blindness.note_no_frame()
                     if self._handle_keys() is False:
                         break
                     time.sleep(0.2)
                     continue
 
+                if self.safety.blindness.note_frame():
+                    self.engine.reset(present=True)
+
                 result = self.engine.process(frame)
+                if result.evidence == EV_FACE:
+                    self.safety.note_recognised()
 
                 if result.should_lock:
-                    self._do_lock(result.lock_reason)
+                    verdict = self.safety.may_lock()
+                    if verdict:
+                        self._do_lock(result.lock_reason)
+                    else:
+                        result.should_lock = False
+                        result.withheld_reason = verdict.reason
 
                 if cfg.preview:
                     view = draw_overlay(
@@ -122,6 +151,7 @@ class PresenceLockApp:
                         fps=self._fps,
                         dry_run=cfg.dry_run or not self.arm,
                         mirror=cfg.mirror_preview,
+                        safety=self.safety.status(),
                     )
                     cv2.imshow(cfg.window_name, view)
 
@@ -143,7 +173,7 @@ class PresenceLockApp:
         """Cached lock-screen probe — no need to ask the OS on every frame."""
         now = time.monotonic()
         if now >= self._lock_probe_at:
-            self._lock_probe_result = is_session_locked()
+            self._lock_probe_result = self.locker.is_locked() is True
             self._lock_probe_at = now + interval
         return self._lock_probe_result
 
@@ -160,14 +190,17 @@ class PresenceLockApp:
         if self.cfg.dry_run:
             log.warning("DRY RUN — would lock now: %s", reason)
             self.engine.note_locked()
+            self.safety.note_lock()
             return
 
         log.warning("Locking workstation: %s", reason)
-        if lock_workstation():
-            self.engine.note_locked()
-        else:
-            log.error("Lock failed; will retry after the cooldown")
-            self.engine.note_locked()
+        if not self.locker.lock():
+            log.error("Lock call failed (%s); will retry after the cooldown",
+                      self.locker.describe())
+        self.engine.note_locked()
+        # Counted whether or not the call succeeded: a locker that keeps failing
+        # is exactly the runaway the breaker exists to stop.
+        self.safety.note_lock()
 
     def _handle_keys(self) -> bool | None:
         """Return False to quit the loop."""

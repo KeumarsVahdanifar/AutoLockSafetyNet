@@ -1,0 +1,72 @@
+name: Build executables
+
+# Tag a release (`git tag v2.0.0 && git push --tags`) or run this by hand to
+# get a standalone bundle for each platform attached to the release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: windows-x64
+            archive: zip
+          - os: macos-latest
+            label: macos-arm64
+            archive: tar
+          - os: ubuntu-latest
+            label: linux-x64
+            archive: tar
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install opencv-contrib-python numpy pillow pyinstaller
+          pip install mediapipe || echo "mediapipe unavailable on this runner; body fallback excluded"
+
+      - name: Build
+        run: pyinstaller packaging/autolock.spec --noconfirm
+
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        run: Compress-Archive -Path dist/AutoLockSafetyNet/* -DestinationPath AutoLockSafetyNet-${{ matrix.label }}.zip
+        shell: pwsh
+
+      - name: Package (tar)
+        if: matrix.archive == 'tar'
+        run: tar -czf AutoLockSafetyNet-${{ matrix.label }}.tar.gz -C dist AutoLockSafetyNet
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AutoLockSafetyNet-${{ matrix.label }}
+          path: AutoLockSafetyNet-${{ matrix.label }}.*
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: AutoLockSafetyNet-${{ matrix.label }}.*
+          body: |
+            Standalone builds. Model weights (~45 MB) are downloaded on first run.
+
+            **These binaries are unsigned.** Windows SmartScreen will warn
+            ("More info" > "Run anyway"); macOS Gatekeeper needs
+            `xattr -dr com.apple.quarantine "AutoLock Safety Net.app"`.
+            Building from source avoids both.

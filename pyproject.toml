@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autolock-safetynet"
+version = "2.0.0"
+description = "Locks your workstation when you — specifically you — stop sitting in front of it."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Keumars Vahdanifar" }]
+keywords = ["face-recognition", "screen-lock", "security", "presence-detection", "webcam"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: X11 Applications",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS :: MacOS X",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+    "Topic :: Utilities",
+]
+
+dependencies = [
+    "opencv-contrib-python>=4.9",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+# The desktop control panel. tkinter ships with CPython, but some Linux
+# distributions split it into a system package (python3-tk).
+gui = ["pillow>=10.0"]
+# Body/pose fallback for working head-down.
+body = ["mediapipe>=0.10.9"]
+# Higher-accuracy face backend. Needs a C++ toolchain on Windows.
+insightface = ["insightface>=0.7.3", "onnxruntime>=1.17"]
+# Lock-state detection on macOS.
+macos = ["pyobjc-framework-Quartz>=10.0"]
+build = ["pyinstaller>=6.0"]
+all = [
+    "pillow>=10.0",
+    "mediapipe>=0.10.9",
+]
+
+[project.scripts]
+autolock = "autolock.cli:main"
+
+[project.gui-scripts]
+autolock-gui = "autolock.gui:launch"
+
+[project.urls]
+Homepage = "https://github.com/KeumarsVahdanifar/AutoLockSafetyNet"
+Issues = "https://github.com/KeumarsVahdanifar/AutoLockSafetyNet/issues"
+
+[tool.setuptools]
+packages = ["autolock", "autolock.backends"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
+ignore = ["B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

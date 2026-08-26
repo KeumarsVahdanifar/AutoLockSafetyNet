@@ -32,7 +32,7 @@ def setup_logging(level: str = "INFO") -> None:
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         file_handler = RotatingFileHandler(
-            LOG_DIR / "presence_lock.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8"
+            LOG_DIR / "autolock.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8"
         )
         file_handler.setFormatter(
             logging.Formatter("%(asctime)s  %(levelname)-7s %(name)s: %(message)s")

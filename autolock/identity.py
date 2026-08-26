@@ -122,7 +122,7 @@ class Identity:
         return self.path
 
     @classmethod
-    def load(cls, path: Path) -> "Identity":
+    def load(cls, path: Path) -> Identity:
         with np.load(path, allow_pickle=True) as data:
             meta_raw = data["meta"].item() if "meta" in data else "{}"
             return cls(
@@ -136,7 +136,7 @@ class Identity:
             )
 
     @classmethod
-    def load_by_name(cls, name: str) -> "Identity":
+    def load_by_name(cls, name: str) -> Identity:
         path = IDENTITY_DIR / f"{name}{_SUFFIX}"
         if not path.exists():
             raise FileNotFoundError(f"no enrolled identity named '{name}' in {IDENTITY_DIR}")
@@ -164,7 +164,7 @@ class IdentityGallery:
         margin: float = 0.08,
     ) -> None:
         if not identities:
-            raise ValueError("no enrolled identities — run `python plock.py enroll` first")
+            raise ValueError("no enrolled identities — run `python main.py enroll` first")
         self.identities = identities
         self.threshold = float(threshold) if threshold > 0 else max(i.threshold for i in identities)
         self.margin = float(margin)
@@ -176,11 +176,11 @@ class IdentityGallery:
         backend_name: str = "",
         threshold: float = 0.0,
         margin: float = 0.08,
-    ) -> "IdentityGallery":
+    ) -> IdentityGallery:
         names = [name] if name else list_identities()
         if not names:
             raise FileNotFoundError(
-                "no enrolled identities — run `python plock.py enroll --name <you>` first"
+                "no enrolled identities — run `python main.py enroll --name <you>` first"
             )
         loaded = [Identity.load_by_name(n) for n in names]
         if backend_name:

@@ -36,8 +36,14 @@
   "unknown_confirm_s": 2.0,
   "dry_run": false,
   "release_camera_when_locked": true,
+  "require_initial_recognition": true,
+  "startup_grace_s": 20.0,
+  "max_locks_per_window": 3,
+  "lock_window_s": 120.0,
+  "breaker_pause_s": 300.0,
+  "pause_file": "PAUSE",
   "preview": true,
   "mirror_preview": true,
-  "window_name": "Presence Lock",
+  "window_name": "AutoLock Safety Net",
   "log_level": "INFO"
 }

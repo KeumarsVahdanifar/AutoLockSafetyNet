@@ -84,7 +84,7 @@ def download(spec: ModelSpec, force: bool = False) -> Path:
     with tempfile.NamedTemporaryFile(delete=False, dir=MODELS_DIR, suffix=".part") as tmp:
         tmp_path = Path(tmp.name)
     try:
-        request = urllib.request.Request(spec.url, headers={"User-Agent": "presence-lock"})
+        request = urllib.request.Request(spec.url, headers={"User-Agent": "autolock-safetynet"})
         with urllib.request.urlopen(request, timeout=60) as response, tmp_path.open("wb") as out:
             shutil.copyfileobj(response, out)
         if spec.sha1 and _sha1(tmp_path) != spec.sha1:

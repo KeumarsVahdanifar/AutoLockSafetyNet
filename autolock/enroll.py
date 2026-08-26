@@ -175,7 +175,11 @@ def enroll_interactive(
     total_captured = 0
 
     with Camera(
-        cfg.camera_index, cfg.camera_api, cfg.frame_width, cfg.frame_height, cfg.camera_warmup_frames
+        cfg.camera_index,
+        cfg.camera_api,
+        cfg.frame_width,
+        cfg.frame_height,
+        cfg.camera_warmup_frames,
     ) as camera:
         if not camera.is_open:
             raise RuntimeError(f"cannot open camera {cfg.camera_index}")
@@ -370,5 +374,5 @@ def _report(identity: Identity, path: Path) -> None:
         log.warning(
             "  Some enrolled poses score below the threshold against each other. "
             "That is expected with steep angles — the run loop falls back to tracking, "
-            "body and motion evidence. Run `python plock.py test` to watch live scores."
+            "body and motion evidence. Run `python main.py test` to watch live scores."
         )

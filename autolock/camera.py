@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 import time
 
 import cv2
@@ -11,23 +12,42 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 _APIS = {
-    "dshow": cv2.CAP_DSHOW,
-    "msmf": cv2.CAP_MSMF,
+    "auto": cv2.CAP_ANY,
     "any": cv2.CAP_ANY,
+    "dshow": cv2.CAP_DSHOW,  # Windows
+    "msmf": cv2.CAP_MSMF,  # Windows
+    "avfoundation": cv2.CAP_AVFOUNDATION,  # macOS
+    "v4l2": cv2.CAP_V4L2,  # Linux
+    "gstreamer": cv2.CAP_GSTREAMER,
 }
+
+
+def default_api() -> str:
+    """The capture backend that opens fastest and most reliably per platform."""
+    if sys.platform == "win32":
+        return "dshow"
+    if sys.platform == "darwin":
+        return "avfoundation"
+    if sys.platform.startswith("linux"):
+        return "v4l2"
+    return "auto"
 
 
 class Camera:
     def __init__(
         self,
         index: int = 0,
-        api: str = "dshow",
+        api: str = "auto",
         width: int = 640,
         height: int = 480,
         warmup_frames: int = 5,
     ) -> None:
         self.index = int(index)
-        self.api = _APIS.get(str(api).lower(), cv2.CAP_ANY)
+        requested = str(api).lower()
+        if requested in ("", "auto"):
+            requested = default_api()
+        self.api_name = requested
+        self.api = _APIS.get(requested, cv2.CAP_ANY)
         self.width = int(width)
         self.height = int(height)
         self.warmup_frames = int(warmup_frames)
@@ -45,7 +65,17 @@ class Camera:
         cap = cv2.VideoCapture(self.index, self.api)
         if not cap.isOpened():
             cap.release()
-            return False
+            # A platform default can be wrong for an unusual camera (virtual
+            # devices, some USB stacks), so fall back to letting OpenCV choose.
+            if self.api != cv2.CAP_ANY:
+                log.debug("%s backend failed for camera %d; retrying with auto",
+                          self.api_name, self.index)
+                cap = cv2.VideoCapture(self.index, cv2.CAP_ANY)
+                if not cap.isOpened():
+                    cap.release()
+                    return False
+            else:
+                return False
 
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
@@ -91,7 +121,7 @@ class Camera:
             return None
         return frame
 
-    def __enter__(self) -> "Camera":
+    def __enter__(self) -> Camera:
         self.open()
         return self
 
