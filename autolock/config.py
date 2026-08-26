@@ -99,9 +99,9 @@ class Config:
     # At login the camera is often still warming up and you may not be seated:
     # the worst case of this guard is "it never locks", never "it locks forever".
     require_initial_recognition: bool = True
-    startup_grace_s: float = 20.0  # no locking at all for this long after start
+    startup_grace_s: float = 10.0  # no locking at all for this long after start
     max_locks_per_window: int = 3  # circuit breaker: 0 disables it
-    lock_window_s: float = 120.0
+    lock_window_s: float = 60.0
     breaker_pause_s: float = 300.0  # how long the breaker stays tripped
     pause_file: str = "PAUSE"  # create this file in the project dir to stop locking
 

@@ -58,9 +58,16 @@ class ArmingGateTests(ClockedTest):
         gate.note_recognised()
         self.assertTrue(gate.check())
 
-    def test_startup_grace_blocks_even_after_recognition(self):
+    def test_recognition_waives_the_startup_grace(self):
+        """Once you have been seen, waiting out the grace serves no purpose."""
         gate = ArmingGate(require_recognition=True, startup_grace_s=20.0)
+        self.assertFalse(gate.check())  # grace, and not yet recognised
+
         gate.note_recognised()
+        self.assertTrue(gate.check(), "recognition should end the grace immediately")
+
+    def test_grace_still_covers_the_window_before_recognition(self):
+        gate = ArmingGate(require_recognition=False, startup_grace_s=20.0)
         self.assertFalse(gate.check())
         self.assertIn("startup grace", gate.check().reason)
 
@@ -74,7 +81,10 @@ class ArmingGateTests(ClockedTest):
         self.assertTrue(gate.check())
 
         gate.restart_grace()  # the user just typed their password
-        self.assertFalse(gate.check())
+        self.assertFalse(gate.check(), "a fresh unlock gets the grace back")
+
+        gate.note_recognised()  # ...until they are recognised again
+        self.assertTrue(gate.check())
 
     def test_recognition_can_be_waived(self):
         gate = ArmingGate(require_recognition=False, startup_grace_s=0.0)
@@ -183,12 +193,13 @@ class SupervisorTests(ClockedTest):
                 self.assertFalse(supervisor.may_lock())
                 self.clock.advance(1.0)
 
-    def test_locking_allowed_once_recognised_and_settled(self):
+    def test_locking_allowed_as_soon_as_you_are_recognised(self):
         with tempfile.TemporaryDirectory() as tmp:
             supervisor = self._supervisor(tmp, startup_grace_s=20.0)
+            self.assertFalse(supervisor.may_lock())
+
             supervisor.note_recognised()
-            self.clock.advance(21.0)
-            self.assertTrue(supervisor.may_lock())
+            self.assertTrue(supervisor.may_lock(), "no grace left to wait out once seen")
 
     def test_a_lock_loop_is_broken(self):
         with tempfile.TemporaryDirectory() as tmp:

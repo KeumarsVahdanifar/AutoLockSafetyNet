@@ -51,11 +51,12 @@ class ArmingGate:
     every one of those situations is "it never locks", not "it locks forever".
     """
 
-    def __init__(self, require_recognition: bool = True, startup_grace_s: float = 20.0) -> None:
+    def __init__(self, require_recognition: bool = True, startup_grace_s: float = 10.0) -> None:
         self.require_recognition = bool(require_recognition)
         self.startup_grace_s = float(startup_grace_s)
         self._started = time.monotonic()
         self._armed = not self.require_recognition
+        self._grace_waived = False
         self._warned = False
 
     @property
@@ -63,13 +64,22 @@ class ArmingGate:
         return self._armed
 
     def note_recognised(self) -> None:
+        """Seeing you settles both questions the guard exists to ask.
+
+        The grace covers the window where the camera might not be ready and you
+        might not be seated. Once you have actually been recognised, both of
+        those are answered, so waiting out the rest of it would only delay a
+        lock you already want.
+        """
         if not self._armed:
             log.info("Recognised you — monitor armed")
-            self._armed = True
+        self._armed = True
+        self._grace_waived = True
 
     def restart_grace(self) -> None:
         """Begin the startup grace again, e.g. after the session is unlocked."""
         self._started = time.monotonic()
+        self._grace_waived = False
 
     def check(self) -> Verdict:
         now = time.monotonic()
@@ -81,6 +91,8 @@ class ArmingGate:
                 )
                 self._warned = True
             return Verdict(False, "not armed: you have not been recognised yet")
+        if self._grace_waived:
+            return Verdict(True)
         elapsed = now - self._started
         if elapsed < self.startup_grace_s:
             return Verdict(False, f"startup grace ({self.startup_grace_s - elapsed:.0f}s left)")
@@ -137,7 +149,7 @@ class CircuitBreaker:
     explanation in the log.
     """
 
-    def __init__(self, max_locks: int = 3, window_s: float = 120.0, pause_s: float = 300.0) -> None:
+    def __init__(self, max_locks: int = 3, window_s: float = 60.0, pause_s: float = 300.0) -> None:
         self.max_locks = int(max_locks)
         self.window_s = float(window_s)
         self.pause_s = float(pause_s)

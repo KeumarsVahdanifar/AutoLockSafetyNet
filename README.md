@@ -197,13 +197,15 @@ python main.py autostart --uninstall
    at least once this session. At login the camera is still warming up and you
    may not be seated — the worst case of this guard is "it never locks", never
    "it locks forever". (`require_initial_recognition`)
-2. **Startup grace.** No locking at all for the first 20 s after start, and the
+2. **Startup grace.** No locking at all for the first 10 s after start, and the
    grace restarts every time the session is unlocked, so you are never locked
-   straight back out. (`startup_grace_s`)
+   straight back out. **Being recognised ends it immediately** — the grace
+   exists to cover the window where the camera might not be ready and you might
+   not be seated, and seeing you answers both. (`startup_grace_s`)
 3. **Never lock while blind.** A camera that is missing, busy (Zoom, Teams) or
    broken produces no evidence either way. Being blind is not grounds to lock,
    and regaining sight restarts the countdown rather than firing on a stale one.
-4. **Circuit breaker.** If 3 locks fire within 120 s, something is wrong — a bad
+4. **Circuit breaker.** If 3 locks fire within 60 s, something is wrong — a bad
    template, a camera pointing at a wall. Locking stops for 5 minutes and says
    so in the log. (`max_locks_per_window`, `lock_window_s`, `breaker_pause_s`)
 
@@ -225,9 +227,10 @@ Or create a file named `PAUSE` in the project folder by any means — a file
 manager, an SSH session, another machine. Locking stops until it is deleted.
 The GUI's **Pause locking** button does the same thing.
 
-**If you are ever locked out:** log in, and within the 20 s startup grace run
-`python main.py pause --on`, or delete the autostart entry printed by
-`autostart --status`.
+**If you are ever locked out:** log in and run `python main.py pause --on`
+straight away, or delete the autostart entry printed by `autostart --status`.
+The circuit breaker also gives you a guaranteed 5-minute window after the third
+lock in a minute.
 
 ---
 
@@ -280,8 +283,8 @@ absence_timeout_s=abc` is refused rather than silently stored. CLI flags on
 | `lock_on_unknown` | `true` | lock when a stranger is at the desk and you are not |
 | `unknown_confirm_s` | `2.0` | how long a stranger must persist to count |
 | `require_initial_recognition` | `true` | stay disarmed until recognised once |
-| `startup_grace_s` | `20.0` | no locking for this long after start or unlock |
-| `max_locks_per_window` | `3` | circuit breaker; `0` disables it |
+| `startup_grace_s` | `10.0` | no locking for this long after start or unlock; recognition ends it early |
+| `max_locks_per_window` / `lock_window_s` | `3` / `60.0` | circuit breaker; `0` locks disables it |
 | `target_fps` | `12.0` | processing rate — the main CPU dial |
 | `camera_api` | `auto` | per-platform capture backend |
 | `dry_run` | `false` | log instead of locking |
