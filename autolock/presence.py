@@ -28,6 +28,7 @@ from .backends import FaceBackend, FaceDet, detect_with_rotations, iou
 from .body import BodyDetector, BodySignal
 from .config import Config
 from .identity import IdentityGallery, MatchResult
+from .liveness import LivenessDetector, LivenessResult
 
 log = logging.getLogger(__name__)
 
@@ -51,13 +52,20 @@ class ScoredFace:
     det: FaceDet
     match: MatchResult | None = None
     tracked: bool = False
+    liveness: LivenessResult = field(default_factory=LivenessResult)
 
     @property
     def similarity(self) -> float:
         return self.match.similarity if self.match else float("nan")
 
     @property
+    def spoofed(self) -> bool:
+        return self.liveness.checked and not self.liveness.live
+
+    @property
     def label(self) -> str:
+        if self.spoofed:
+            return "SPOOF"
         if self.match and self.match.is_match:
             return self.match.name
         if self.tracked:
@@ -75,6 +83,7 @@ class FrameResult:
     body: BodySignal = field(default_factory=BodySignal)
     motion: bool = False
     stranger_for: float = 0.0  # seconds an unrecognised face has been in frame
+    spoof_rejected: bool = False  # a matching face failed the liveness check
     evidence: str = EV_NONE
     unrecognised_for: float = 0.0  # seconds since the last confirmed recognition
     seconds_to_lock: float = math.inf
@@ -141,6 +150,23 @@ class PresenceEngine:
         self.body = body
         self.motion = MotionSensor(cfg.motion_threshold) if cfg.use_motion_fallback else None
 
+        # Optional, and optional all the way down: if anything about the
+        # liveness model goes wrong the monitor keeps working without it.
+        self.liveness: LivenessDetector | None = None
+        if cfg.require_liveness:
+            try:
+                detector = LivenessDetector(threshold=cfg.liveness_threshold)
+                self.liveness = detector if detector.available else None
+            except Exception as exc:
+                log.warning(
+                    "Liveness check could not be created (%s); continuing without it", exc
+                )
+            if self.liveness is None:
+                log.warning(
+                    "require_liveness is on but the check is not running — "
+                    "faces will NOT be tested for spoofing."
+                )
+
         now = time.monotonic()
         self._frame_index = 0
         # Zero, not `now`: the weak layers may only extend a presence that a
@@ -156,6 +182,8 @@ class PresenceEngine:
         self._locked = False
         self._lock_until = 0.0
         self._last_evidence = EV_FACE
+        self._last_liveness: LivenessResult | None = None
+        self._spoof_logged = False
 
     # ------------------------------------------------------------------
     # State
@@ -218,12 +246,37 @@ class PresenceEngine:
         result.faces = scored
 
         owner = next((f for f in scored if f.match and f.match.is_match), None)
+
+        # A photograph of you is not you. A face that fails the liveness check
+        # is stripped of ownership, so it cannot reset the countdown — the
+        # clock keeps running exactly as if nobody were there.
+        if owner is not None and self.liveness is not None:
+            self._apply_liveness(frame, owner, now)
+            if owner.spoofed:
+                result.spoof_rejected = True
+                if not self._spoof_logged:
+                    log.warning(
+                        "Face matched %s but failed the liveness check (%.2f) — "
+                        "not counting it as present.",
+                        owner.match.name if owner.match else "?",
+                        owner.liveness.score,
+                    )
+                    self._spoof_logged = True
+                owner = None
+            else:
+                self._spoof_logged = False
+
         result.owner = owner
         # Sitting where you sat does not make someone you: a face scored below
         # the stranger cut-off is listed here wherever it appears in frame.
         result.strangers = [
             f for f in scored if f.match and f.match.is_stranger and f is not owner
         ]
+        if result.spoof_rejected and cfg.spoof_counts_as_stranger:
+            # Opt-in: treat a held-up photo as an intruder rather than merely
+            # as nobody. Faster to lock, but a false spoof reading on your own
+            # face then locks in unknown_confirm_s instead of the full timeout.
+            result.strangers.extend(f for f in scored if f.spoofed)
 
         # --- strongest layer: a confirmed recognition -------------------
         # This is the only thing that resets the countdown. Everything below
@@ -370,6 +423,25 @@ class PresenceEngine:
             face.tracked = in_box and not (face.match is not None and face.match.is_stranger)
             scored.append(face)
         return scored
+
+    def _apply_liveness(self, frame: np.ndarray, face: ScoredFace, now: float) -> None:
+        """Score a matched face for spoofing, reusing the last verdict between checks."""
+        if self.liveness is None or not self.liveness.available:
+            return
+
+        due = self._frame_index % max(1, self.cfg.liveness_every) == 0
+        if not due and self._last_liveness is not None:
+            # Between scheduled checks the previous verdict still applies; a
+            # spoof does not become live in a third of a second.
+            face.liveness = self._last_liveness
+            return
+
+        try:
+            face.liveness = self.liveness.check(frame, face.det)
+        except Exception as exc:  # belt and braces: never break the frame loop
+            log.debug("Liveness check raised: %s", exc)
+            face.liveness = LivenessResult(checked=False, live=True, reason="check failed")
+        self._last_liveness = face.liveness
 
     def _update_stranger_timer(
         self, strangers: list[ScoredFace], owner: ScoredFace | None, now: float

@@ -106,11 +106,13 @@ def _install_windows(extra_args: list[str] | None, headless: bool) -> InstallRes
     # `start ""` detaches so the login sequence is never held up by us.
     script = (
         "@echo off\r\n"
-        f"rem {APP_NAME} — delete this file to stop it starting at login.\r\n"
+        f"rem {APP_NAME} - delete this file to stop it starting at login.\r\n"
         f'cd /d "{PROJECT_ROOT}"\r\n'
         f'start "" {_quote(command)}\r\n'
     )
-    entry.write_text(script, encoding="utf-8")
+    # cmd.exe reads .cmd files in the console's ANSI codepage, not UTF-8, so
+    # the stub stays ASCII-only rather than rendering as mojibake.
+    entry.write_text(script, encoding="ascii", errors="replace")
     return InstallResult(
         ok=True,
         location=str(entry),

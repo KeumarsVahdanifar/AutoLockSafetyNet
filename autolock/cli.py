@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import time
 from pathlib import Path
 
 from . import __version__, models
@@ -121,6 +122,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--arg", dest="extra_args", action="append", default=None, metavar="FLAG",
         help="extra flag for the installed command, e.g. --arg --body-hold=60",
     )
+
+    # ---- liveness ----
+    live = sub.add_parser(
+        "liveness", parents=[common], help="anti-spoofing: calibrate, enable or disable"
+    )
+    live_group = live.add_mutually_exclusive_group()
+    live_group.add_argument(
+        "--test", action="store_true",
+        help="show live anti-spoof scores so you can pick a threshold",
+    )
+    live_group.add_argument("--enable", action="store_true", help="turn the check on and save")
+    live_group.add_argument("--disable", action="store_true", help="turn the check off and save")
+    live.add_argument(
+        "--threshold", dest="liveness_threshold", type=float, default=None,
+        help="score below which a face counts as a spoof (default 0.55)",
+    )
+    live.add_argument("--seconds", type=float, default=30.0, help="how long --test runs")
 
     # ---- pause ----
     pause = sub.add_parser("pause", help="stop or resume locking without stopping the monitor")
@@ -284,6 +302,112 @@ def cmd_autostart(args: argparse.Namespace) -> int:
     log.info(
         "Would run: %s",
         " ".join(autostart.launch_command(args.extra_args, args.headless)),
+    )
+    return 0
+
+
+def cmd_liveness(args: argparse.Namespace) -> int:
+    cfg = _config_from_args(args)
+
+    if args.enable or args.disable:
+        stored = Config.load(args.config)
+        stored.require_liveness = bool(args.enable)
+        if args.liveness_threshold is not None:
+            stored.liveness_threshold = float(args.liveness_threshold)
+        stored.save(args.config)
+        log.info(
+            "Liveness check %s (threshold %.2f). Saved to %s",
+            "ENABLED" if args.enable else "disabled",
+            stored.liveness_threshold,
+            args.config,
+        )
+        if args.enable:
+            log.info(
+                "If your own face ever scores below the threshold you will be locked "
+                "repeatedly — the circuit breaker will stop it after 3 locks in 60s, and "
+                "`autolock liveness --disable` turns this back off."
+            )
+        return 0
+
+    # --- calibration ---
+    import cv2
+
+    from .backends import build_backend
+    from .camera import Camera
+    from .liveness import LivenessDetector
+
+    detector = LivenessDetector(threshold=cfg.liveness_threshold)
+    if not detector.available:
+        log.error("Anti-spoofing model is not usable: %s", detector.status)
+        log.error("Everything else still works; the check simply cannot run here.")
+        return 2
+
+    backend = build_backend(cfg)
+    camera = Camera(cfg.camera_index, cfg.camera_api, cfg.frame_width, cfg.frame_height)
+    if not camera.open():
+        log.error("Cannot open camera %d", cfg.camera_index)
+        return 2
+
+    log.info("Calibration: watch the score with your real face, then hold up a photo")
+    log.info("  of yourself on a phone. Pick a threshold between the two clusters.")
+    log.info("  ESC or Ctrl-C to stop (running %.0fs).", args.seconds)
+
+    scores: list[float] = []
+    deadline = time.monotonic() + args.seconds
+    window = "Liveness calibration"
+    try:
+        cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+        while time.monotonic() < deadline:
+            frame = camera.read()
+            if frame is None:
+                time.sleep(0.1)
+                continue
+            faces = backend.detect(frame)
+            if faces:
+                score = detector.score(frame, faces[0])
+                if score == score:  # not NaN
+                    scores.append(score)
+                    x, y, w, h = faces[0].bbox
+                    live = score >= cfg.liveness_threshold
+                    colour = (80, 220, 100) if live else (70, 70, 240)
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), colour, 2)
+                    cv2.putText(
+                        frame,
+                        f"liveness {score:.3f}  {'LIVE' if live else 'SPOOF'}",
+                        (x, max(20, y - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 2, cv2.LINE_AA,
+                    )
+            if cfg.mirror_preview:
+                frame = cv2.flip(frame, 1)
+            cv2.imshow(window, frame)
+            if cv2.waitKey(1) & 0xFF == 27:
+                break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        camera.release()
+        cv2.destroyAllWindows()
+        cv2.waitKey(1)
+        backend.close()
+        detector.close()
+
+    if not scores:
+        log.error("No faces were scored — nothing to calibrate from.")
+        return 2
+
+    array = sorted(scores)
+    log.info("Scored %d frames:", len(array))
+    log.info(
+        "  min %.3f | p05 %.3f | median %.3f | p95 %.3f | max %.3f",
+        array[0],
+        array[max(0, int(0.05 * len(array)) - 1)],
+        array[len(array) // 2],
+        array[min(len(array) - 1, int(0.95 * len(array)))],
+        array[-1],
+    )
+    log.info(
+        "Set the threshold below your real-face scores and above your photo scores:\n"
+        "  autolock liveness --enable --threshold <value>"
     )
     return 0
 
@@ -509,7 +633,7 @@ def coerce_setting(cfg: Config, key: str, raw: str):
 # ----------------------------------------------------------------------
 COMMANDS = (
     "run", "test", "gui", "enroll", "identities", "models",
-    "doctor", "config", "autostart", "pause",
+    "doctor", "config", "autostart", "pause", "liveness",
 )
 _GLOBAL_FLAGS_WITH_VALUE = ("--config", "--log-level")
 
@@ -556,6 +680,7 @@ def main(argv: list[str] | None = None) -> int:
         "config": cmd_config,
         "autostart": cmd_autostart,
         "pause": cmd_pause,
+        "liveness": cmd_liveness,
     }
 
     try:

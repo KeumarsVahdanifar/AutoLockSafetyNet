@@ -174,7 +174,49 @@ python main.py run                     # strict: 3 s, recognition or nothing
 
 ---
 
-## 3. Start at login — without locking yourself out
+## 3. Liveness — is it you, or a photo of you?
+
+Recognition answers *"is this Kian?"*. It cannot tell a person from a
+photograph of that person propped in front of the webcam — the one attack that
+matters here, since it would keep your machine unlocked while you are away.
+(Spoofing can never *unlock* anything: this app only ever decides when to lock.)
+
+The check is Intel Open Model Zoo's `anti-spoof-mn3` — a MobileNetV3
+classifier, Apache-2.0, ~12 MB — run through OpenCV's DNN module, so it adds no
+new runtime dependency. A face that fails it is stripped of ownership: it does
+not reset the countdown, so the clock keeps running as if nobody were there.
+
+```bash
+python main.py liveness --test                 # watch your live score, then hold up a photo
+python main.py liveness --enable --threshold 0.6
+python main.py liveness --disable
+```
+
+**Calibrate before enabling.** `--test` prints the distribution of your own
+scores; hold a photo of yourself on a phone up to the camera and watch what
+happens, then pick a threshold between the two clusters. A threshold above your
+real-face scores means being locked every few seconds.
+
+It **fails open at every level.** If the model will not download, will not
+parse, fails its startup self-test, or throws during inference, you get a
+warning and the monitor carries on doing its actual job without the check —
+never a crash, and never a face wrongly called a spoof. Ten consecutive
+inference failures disable it for the session rather than spamming the log.
+
+| key | default | meaning |
+|---|---|---|
+| `require_liveness` | `false` | run the check at all |
+| `liveness_threshold` | `0.55` | below this, a face is treated as a spoof |
+| `liveness_every` | `3` | score every Nth recognised frame |
+| `spoof_counts_as_stranger` | `false` | if true, a spoof locks in `unknown_confirm_s` rather than at the normal timeout |
+
+**Its limits, plainly.** This is a 2D texture-and-context classifier, not depth
+sensing. It is good at printed photos and phone/monitor replays; it is not
+proof against a high-quality mask, and no monocular method is. Real 3D would
+need an IR or depth camera (Windows Hello, Intel RealSense), which this does
+not use.
+
+## 4. Start at login — without locking yourself out
 
 This is the dangerous part of any auto-locker: a monitor that starts before you
 are seated will lock the machine you just logged into, over and over.
@@ -261,6 +303,7 @@ python main.py run  [--timeout 3] [--threshold 0.4] [--no-preview] [--dry-run]
 python main.py test                   # same pipeline, locking disabled
 python main.py enroll --name <you> [--append] [--samples 12] [--from-images DIR]
 python main.py identities
+python main.py liveness [--test|--enable|--disable] [--threshold 0.6] [--seconds 30]
 python main.py autostart [--install|--uninstall|--status] [--headless] [--arg --body-hold=60]
 python main.py pause [--on|--off]
 python main.py models [--force]
@@ -358,8 +401,8 @@ and it is built to fail safe. Be clear about what it is:
 **It decides when to _lock_, never when to _unlock_.** A false match costs you
 a few seconds of screen time; it never grants access. That is why this is a
 convenience lock, **not an authentication factor** — it is not a replacement
-for your password, and a photograph on a phone would satisfy a 2D face matcher
-like this one. It has no liveness detection.
+for your password. Optional liveness detection (above) handles printed photos
+and screen replays, but it is a 2D classifier, not depth sensing.
 
 Known limitations:
 
@@ -395,6 +438,7 @@ autolock/
   presence.py   the countdown state machine   <- the interesting part
   safety.py     arming gate, blindness, circuit breaker, pause switch
   identity.py   templates, matching, quality stats
+  liveness.py   anti-spoofing; fails open at every level
   enroll.py     the guided capture wizard
   lock.py       per-platform locking and lock-state probes
   autostart.py  login entries for Windows / macOS / Linux

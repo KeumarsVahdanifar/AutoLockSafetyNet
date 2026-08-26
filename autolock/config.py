@@ -57,6 +57,18 @@ class Config:
     rotation_retry_every: int = 3  # only every Nth frame with no face (it is not free)
 
     # ------------------------------------------------------------------
+    # Liveness / anti-spoofing
+    # ------------------------------------------------------------------
+    # Off until you have calibrated it: run `autolock liveness --test`, hold a
+    # photo of yourself up to the camera, and pick a threshold between the two
+    # score clusters. Enabling it untested risks rejecting your own real face,
+    # which means locking every few seconds.
+    require_liveness: bool = False
+    liveness_threshold: float = 0.55  # below this a face is treated as a spoof
+    liveness_every: int = 3  # score every Nth recognised frame; it is not free
+    spoof_counts_as_stranger: bool = False  # otherwise a spoof just fails to reset the clock
+
+    # ------------------------------------------------------------------
     # Presence fallbacks (the "head down / looking away" layer)
     # ------------------------------------------------------------------
     # Off by default: with the *_hold_s ceilings at 0 these signals cannot

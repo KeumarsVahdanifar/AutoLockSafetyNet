@@ -22,6 +22,10 @@
     60
   ],
   "rotation_retry_every": 3,
+  "require_liveness": false,
+  "liveness_threshold": 0.55,
+  "liveness_every": 3,
+  "spoof_counts_as_stranger": false,
   "use_body_fallback": false,
   "body_min_visibility": 0.55,
   "use_motion_fallback": false,
@@ -47,3 +51,4 @@
   "window_name": "AutoLock Safety Net",
   "log_level": "INFO"
 }
+
